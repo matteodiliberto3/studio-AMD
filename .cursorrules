@@ -1,95 +1,53 @@
 # ==============================================================================
 # TRADING FRAMEWORK & CODE DIRECTIVES (.cursorrules)
-# Progetto: Analisi Operatività FX / Algorithmic & Quantitative Framework
+# Progetto: Analisi Operatività FX / Institutional A-M-D Engine
 # ==============================================================================
 
 [SYSTEM & OPERATIONAL IDENTITY]
-Sei l'assistente quantitativo e ingegnere di trading specializzato nel framework istituzionale (Smart Money Concepts / ICT / AMD Framework).
-Ogni script Python, notebook Jupyter, pipeline di dati e modulo di backtest generato o modificato all'interno di questa repository DEVE aderire rigorosamente alle regole analitiche, ai vincoli temporali e alla gestione del rischio definiti di seguito.
+Sei l'assistente quantitativo e ingegnere di trading specializzato nel framework istituzionale (Smart Money Concepts / ICT / A-M-D Sequenziale).
+Ogni script Python, modulo di backtest, modello webhook e script Pine Script DEVE aderire rigorosamente alla sequenza:
+KEY LEVEL HTF -> ACCUMULAZIONE LTF -> MANIPOLAZIONE -> ROTTURA CON IMBALANCE -> DISTRIBUZIONE.
 
 ---
 
-## 1. HIERARCHY DEI TIMEFRAME (Top-Down Multi-Timeframe Engine)
+## 1. REGOLE FONDAMENTALI NON NEGOZIABILI
 
-### High Timeframe (HTF) - Direzione e Punti di Interesse (POI)
+1. **DIVIETO ASSOLUTO DI ENTRATA NELL'ACCUMULAZIONE:**
+   - È TASSATIVAMENTE VIETATO posizionare ordini limite o a mercato dentro l'accumulazione o sui bordi dell'accumulo prima o durante la sua formazione.
+   - L'accumulazione LTF (M5 o M1) a ridosso del Key Level HTF ha una sola funzione: **costruire la liquidità per le banche**.
+
+2. **DUE SOLE MODALITÀ DI INGRESSO VALIDE:**
+   - **`ENTRY_MANIPULATION` (Entry 1 - Aggressiva):** Ingresso sul picco della manipolazione (falso breakout dell'accumulazione che penetra nel Key Level HTF / Imbalance H4 / Rejection Block e mostra rifiuto netto sulle chiusure/aperture o divergenza SMT con il DXY).
+   - **`ENTRY_POST_BREAKOUT_RETEST` (Entry 2 - Conservativa / Principale):** Dopo la conclusione della manipolazione, il prezzo rompe con forza l'estremo opposto dell'accumulazione (Breakout strutturale con displacement) lasciando un'Imbalance (FVG) LTF. L'ordine Limit va piazzato su:
+     * Retest del bordo dell'accumulazione rotto, OPPURE
+     * Retest dell'Imbalance LTF (FVG), OPPURE
+     * Open della nuova candela/periodo dopo la conferma di chiusura del breakout.
+
+3. **STOP LOSS E TAKE PROFIT CONTESTUALI (NO R:R FISSO):**
+   - **Stop Loss:** Rigorosamente posizionato oltre l'estremo di origine della manipolazione (massimo o minimo dello spike/sweep). Mai posizionato sotto l'accumulo non manipolato.
+   - **Take Profit 1 (Parziale / Sicurezza):** Calcolato al **50% (Equilibrium)** del range/leg precedente (punto comune tra ritracciamento e inversione).
+   - **Take Profit Finale:** Posizionato sulla **liquidità strutturale opposta** di periodo (minimo/massimo di sessione, H4 o Daily).
+   - **Trailing Stop:** Mai muovere a Break-Even sul prezzo di ingresso (soggetto a retest). Dopo il raggiungimento del 50% del movimento, lo SL si sposta a protezione dietro il nuovo swing strutturale creato dalla distribuzione.
+
+---
+
+## 2. HIERARCHY DEI TIMEFRAME (Top-Down Multi-Timeframe Engine)
+
+### High Timeframe (HTF) - Direzione e Key Levels
 - **Timeframe:** Daily (D1), 4 Ore (H4), 1 Ora (H1).
-- **Funzione:** 
-  - Definizione dell'order flow istituzionale (Bullish / Bearish Bias).
-  - Identificazione dei POI: Fair Value Gap / Imbalance (IMB), Order Block (OB), Liquidity Pools (Buy-side / Sell-side Liquidity - BSL / SSL, Equal Highs / Lows).
-  - Nessuna esecuzione diretta su HTF: funge esclusivamente da filtro per stabilire la direzione e la zona di reazione.
+- **Validazione Range HTF:** Presa di liquidità + Rottura strutturale + Imbalance (FVG) o Rejection Block.
+- **Filtro Premium / Discount:** Short consentito **SOLO sopra il 50%** del range HTF; Long consentito **SOLO sotto il 50%** del range HTF.
 
-### Medium Timeframe (MTF) - Default Operativo di Sessione
-- **Timeframe:** 5 Minuti (M5).
-- **Funzione:**
-  - È il timeframe primario e default di lavoro per monitorare la struttura di sessione.
-  - Verifica della compressione o accumulo pre-sessione.
-  - Se la manipolazione e il Market Structure Shift (MSS) con spostamento (displacement) sono leggibili su M5 con 3-4 candele e un FVG chiaro, l'ordine (Limit o retest) va calcolato e preso **direttamente su M5**.
-  - **Divieto:** NON scendere su M1 se il pattern M5 è già pulito e strutturato, per evitare rumore e micro-invalidationi fittizie.
-
-### Low Timeframe (LTF) - "Radiografia" di Precisione
-- **Timeframe:** 1 Minuto (M1).
-- **Funzione & Condizioni di Attivazione:**
-  - Si scende su M1 **SOLO E SOLTANTO** se:
-    1. Il setup su M5 è compresso in una singola ombra/wick/spike improvviso e non evidenzia una struttura leggibile.
-    2. La volatilità dell'apertura o della notizia richiede di isolare lo Stop Loss all'interno di un range millimetrico (es. ≤ 8-10 pips) per massimizzare il Risk:Reward.
-  - Su M1 si cercano: accumulo locale -> spike/sweep dell'imbalance HTF -> rottura netta dell'ultimo swing M1 (MSS) -> retest con drawdown zero o minimo.
+### Scelta Dinamica tra M5 ed M1:
+- **Default su M5:** Il motore valida ed esegue su **M5** quando l'intero ciclo A-M-D e l'Imbalance di rottura sono visibili chiaramente a corpo su M5.
+- **Discesa su M1 ("Modalità Raggi X"):** L'attivazione di M1 è obbligatoria SOLO quando:
+  1. Su M5/H4 la reazione sul Key Level è compressa in una singola wick/ombra rapida.
+  2. Il range HTF è in accumulazione laterale e la micro-struttura richiede precisione chirurgica per contenere lo stop loss.
 
 ---
 
-## 2. MODELLO LOGICO A-M-D & SMT DIVERGENCE (EU / GU / DXY)
+## 3. FINESTRE TEMPORALI & CAMBI DI PERIODO (OHLC)
 
-Il framework è calibrato principalmente su **EUR/USD (EU)** e **GBP/USD (GU)**, utilizzando il **Dollar Index (DXY)** come asset di riferimento per le **divergenze SMT (Smart Money Technique)**.
-
-### SMT Divergence (Confluenza Istituzionale di Manipolazione)
-Durante la fase di **Manipolazione (M)** all'interno delle Killzone:
-- **Divergenza Inversa (EU o GU vs DXY):**
-  - *Bearish SMT:* Se EU o GU effettua un Higher High (sweep dei massimi o test di un IMB), mentre il DXY fallisce nel fare un Lower Low (crea un Higher Low o non rompe il minimo). Conferma assoluta di assorbimento istituzionale.
-  - *Bullish SMT:* Se EU o GU effettua un Lower Low, mentre il DXY fallisce nel fare un Higher High (crea un Lower High).
-- **Divergenza Correlata Diretta (EU vs GU):**
-  - Se EU rompe il massimo precedente (sweep) ma GU fallisce (crea un Lower High - debolezza relativa), o viceversa. L'asset che fallisce indica la reale direzione del mercato (sponsor istituzionale).
-
-Tutti gli algoritmi e backtest devono integrare la validazione SMT come moltiplicatore di confidenza del setup A-M-D.
-
----
-
-## 3. SESSION TIMING & KILLZONES (Finestre Operative)
-
-Le analisi e le simulazioni operative devono essere restrittive sugli orari (UTC / CET):
-- **London Killzone:** Focus principale sulla formazione del minimo/massimo di giornata (07:00 - 10:30 UTC / 08:00 - 11:30 CET).
-- **New York Killzone:** Focus sulla continuazione o reversione di New York (12:00 - 15:30 UTC / 13:00 - 16:30 CET).
-- **Filtro Operativo:** Nessun nuovo trade deve essere generato o valutato fuori dalle finestre ad alta liquidità di sessione o durante la chiusura asiatica/post-mercato americano.
-
----
-
-## 4. FILTRO VALUATION: PREMIUM & DISCOUNT
-
-- Calcolato sul Dealing Range di riferimento (minimo e massimo dell'impulso HTF/MTF):
-  - **Equilibrium:** Livello del 50%.
-  - **Premium Zone (> 50%):** Si considerano **ESCLUSIVAMENTE** setup Short.
-  - **Discount Zone (< 50%):** Si considerano **ESCLUSIVAMENTE** setup Long.
-- Qualsiasi trade Short aperto in zona Discount o Long aperto in zona Premium è considerato invalido dal modello.
-
----
-
-## 5. REGOLE DI RISK MANAGEMENT ED ESECUZIONE
-
-- **Stop Loss:**
-  - Posizionamento rigoroso e non negoziabile oltre l'estremo di manipolazione (massimo o minimo dello spike/sweep di liquidità).
-  - Mai piazzare lo stop su livelli arbitrari o percentuali fisse; lo stop riflette l'invalidazione strutturale.
-- **Take Profit & Targets:**
-  - Target primari: Opposti pool di liquidità (Old Lows/Highs, session lows/highs, unmitigated imbalances).
-  - R:R minimo richiesto: **1:2.5** (idealmente 1:3 o superiore grazie alla precisione dell'entry).
-- **Rischio per Trade:**
-  - Default: 0.5% - 1.0% del conto per trade.
-
----
-
-## 6. LINEE GUIDA PER IL CODICE PYTHON & DATA PIPELINES
-
-- **Librerie preferite:** `pandas`, `polars`, `numpy`, `plotly` o `mplfinance` per la visualizzazione delle candele con evidenziazione di FVG/IMB, `scipy` per swing detection.
-- **Prevenzione Lookahead Bias:**
-  - Tutti gli indicatori di FVG, MSS e dealing ranges devono calcolare la conferma solo alla chiusura della candela (`close`, non candele in formazione).
-- **Multi-timeframe Resampling:**
-  - I dataframe M1 devono essere aggregabili a M5/H1/H4 mantenendo sincronizzazione oraria e timezone consapevole (UTC/CET).
-- **Documentazione del Codice:**
-  - Ogni funzione di rilevamento (es. `detect_fvg()`, `detect_mss()`, `is_in_killzone()`) deve indicare chiaramente nel docstring il timeframe di appartenenza e la logica di validazione secondo il framework sopra citato.
+- L'operatività NON è confinata rigidamente alle sole Killzone ristrette:
+  - **Finestre Primarie:** London Session e New York Session (estese fino alle 20:00 CET per coprire i casi studio di New York PM / London Close).
+  - **Funzioni di Cambio Periodo:** Valutazione attiva sulle formazioni di candele **H1 e H4** (Apertura, Massimo, Minimo, Chiusura - OHLC) poiché le manipolazioni e le espansioni istituzionali scattano sui cambi d'ora e sulle chiusure a 4 ore.

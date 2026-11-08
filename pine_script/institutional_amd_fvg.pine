@@ -1,182 +1,125 @@
 //@version=5
-indicator("Institutional A-M-D & SMT Engine [Clean Pro]", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+indicator("Institutional A-M-D Engine [HTF to LTF Contextual]", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
 
 // ==============================================================================
-// 1. INPUT SETTINGS & KILLZONES
+// 1. INPUT SETTINGS & HTF CONTEXT
 // ==============================================================================
-grp_sess = "Finestre Operative (Killzones)"
-show_london   = input.bool(true, "Mostra London Killzone", group=grp_sess)
-london_sess   = input.session("0800-1130:23456", "Orario Londra (CET)", group=grp_sess)
-col_london    = input.color(color.new(color.blue, 90), "Colore Londra", group=grp_sess)
+grp_htf       = "High Timeframe Key Levels (H4 / Daily)"
+show_htf_imb  = input.bool(true, "Mostra Imbalance (FVG) H4", group=grp_htf)
+htf_period    = input.timeframe("240", "Timeframe HTF per POI", group=grp_htf)
+col_h4_imb_b  = input.color(color.new(color.maroon, 85), "Colore IMB H4 Bearish", group=grp_htf)
+col_h4_imb_u  = input.color(color.new(color.teal, 85), "Colore IMB H4 Bullish", group=grp_htf)
 
-show_ny       = input.bool(true, "Mostra New York Killzone", group=grp_sess)
-ny_sess       = input.session("1300-1630:23456", "Orario New York (CET)", group=grp_sess)
-col_ny        = input.color(color.new(color.orange, 90), "Colore New York", group=grp_sess)
+grp_ltf       = "Accumulazione LTF (Costruzione Liquidità)"
+show_accum    = input.bool(true, "Evidenzia Box Accumulazione LTF", group=grp_ltf)
+accum_len     = input.int(10, "Lunghezza Accumulo (Barre)", minval=5, maxval=25, group=grp_ltf)
+col_accum     = input.color(color.new(color.gray, 88), "Colore Box Accumulazione", group=grp_ltf)
 
-grp_range     = "Dealing Range & 50% Equilibrium (Senza Medie Mobili)"
-show_range_lines = input.bool(true, "Mostra Range & Equilibrium di Sessione", group=grp_range)
-col_eq        = input.color(color.new(color.yellow, 20), "Colore Equilibrium (50%)", group=grp_range)
-
-grp_fvg       = "Fair Value Gaps (Imbalance)"
-show_fvg      = input.bool(true, "Disegna FVG", group=grp_fvg)
-min_gap_ticks = input.int(10, "Minimo Gap (Tick / Pips)", group=grp_fvg)
-show_fvg_text = input.bool(false, "Mostra etichette di testo dentro i box FVG", group=grp_fvg)
-col_bull_fvg  = input.color(color.new(color.teal, 85), "Colore Bullish FVG", group=grp_fvg)
-col_bear_fvg  = input.color(color.new(color.maroon, 85), "Colore Bearish FVG", group=grp_fvg)
-
-grp_smt       = "SMT Divergence (DXY Benchmark)"
-enable_smt    = input.bool(true, "Rileva Divergenze SMT con DXY", group=grp_smt)
-dxy_ticker    = input.symbol("TVC:DXY", "Ticker DXY", group=grp_smt)
-pivot_bars    = input.int(3, "Forza Pivot Swing (Barre a Sx e Dx)", minval=2, maxval=5, group=grp_smt)
+grp_entries   = "Livelli Operativi Contestuali (SL e Target)"
+show_targets  = input.bool(true, "Traccia Stop Loss, TP 50% e TP Strutturale", group=grp_entries)
+col_sl        = input.color(color.red, "Colore Stop Loss (Estremo Manipolazione)", group=grp_entries)
+col_tp1       = input.color(color.yellow, "Colore Target 1 (50% Parziale)", group=grp_entries)
+col_tp_fin    = input.color(color.green, "Colore Target Finale (Liquidità Opposta)", group=grp_entries)
 
 // ==============================================================================
-// 2. SESSION TIMING & CLEAN BOXES
+// 2. RECUPERO DATI E IMBALANCE HTF (H4)
 // ==============================================================================
-in_london = not na(time(timeframe.period, london_sess, "Europe/Rome"))
-in_ny     = not na(time(timeframe.period, ny_sess, "Europe/Rome"))
+[h4_high, h4_low, h4_close, h4_open] = request.security(syminfo.tickerid, htf_period, [high, low, close, open])
 
-var box l_box = na
-var box ny_box = na
+// Imbalance H4 (3-bar pattern su H4)
+h4_bear_imb = (h4_low[2] - h4_high) > (syminfo.mintick * 20)
+h4_bull_imb = (h4_low - h4_high[2]) > (syminfo.mintick * 20)
 
-// Session High/Low per calcolo Dealing Range reale
-var float sess_high = na
-var float sess_low = na
+var box h4_box = na
+if show_htf_imb and h4_bear_imb
+    h4_box := box.new(left=bar_index - 15, top=h4_low[2], right=bar_index + 10, bottom=h4_high,
+                      bgcolor=col_h4_imb_b, border_color=color.new(color.maroon, 40),
+                      text="HTF IMB (H4 Bearish)", text_size=size.tiny, text_color=color.white)
 
-if show_london
-    if in_london and not in_london[1]
-        sess_high := high
-        sess_low  := low
-        l_box := box.new(left=bar_index, top=high, right=bar_index, bottom=low, 
-                         bgcolor=col_london, border_color=color.new(color.blue, 40), 
-                         border_style=line.style_dashed, text="London KZ", text_size=size.tiny, text_color=color.blue)
-    else if in_london and not na(l_box)
-        sess_high := math.max(nz(sess_high, high), high)
-        sess_low  := math.min(nz(sess_low, low), low)
-        box.set_top(l_box, sess_high)
-        box.set_bottom(l_box, sess_low)
-        box.set_right(l_box, bar_index)
+if show_htf_imb and h4_bull_imb
+    h4_box := box.new(left=bar_index - 15, top=h4_low, right=bar_index + 10, bottom=h4_high[2],
+                      bgcolor=col_h4_imb_u, border_color=color.new(color.teal, 40),
+                      text="HTF IMB (H4 Bullish)", text_size=size.tiny, text_color=color.white)
 
-if show_ny
-    if in_ny and not in_ny[1]
-        sess_high := high
-        sess_low  := low
-        ny_box := box.new(left=bar_index, top=high, right=bar_index, bottom=low, 
-                          bgcolor=col_ny, border_color=color.new(color.orange, 40), 
-                          border_style=line.style_dashed, text="NY KZ", text_size=size.tiny, text_color=color.orange)
-    else if in_ny and not na(ny_box)
-        sess_high := math.max(nz(sess_high, high), high)
-        sess_low  := math.min(nz(sess_low, low), low)
-        box.set_top(ny_box, sess_high)
-        box.set_bottom(ny_box, sess_low)
-        box.set_right(ny_box, bar_index)
+// Dealing Range HTF (Massimo e Minimo H4 recenti)
+htf_range_high = ta.highest(h4_high, 20)
+htf_range_low  = ta.lowest(h4_low, 20)
+htf_equilibrium = (htf_range_high + htf_range_low) / 2.0
+is_htf_premium  = close > htf_equilibrium
+is_htf_discount = close < htf_equilibrium
 
 // ==============================================================================
-// 3. EQUILIBRIUM (50%) COME LIVELLO ORIZZONTALE DI SESSIONE (NO MEDIA MOBILE)
+// 3. ACCUMULAZIONE LTF (Base di Liquidità)
 // ==============================================================================
-// Invece di plottare una linea mobile continua che segue ogni candela curvandosi come una MA,
-// tracciamo linee orizzontali fisse solo durante le sessioni attive.
-var line eq_line = na
+accum_high = ta.highest(high[1], accum_len)
+accum_low  = ta.lowest(low[1], accum_len)
+accum_range = (accum_high - accum_low)
 
-if show_range_lines and (in_london or in_ny) and not na(sess_high) and not na(sess_low)
-    curr_eq = (sess_high + sess_low) / 2.0
-    if (in_london and not in_london[1]) or (in_ny and not in_ny[1])
-        eq_line := line.new(bar_index, curr_eq, bar_index, curr_eq, color=col_eq, style=line.style_dotted, width=1)
-    else if not na(eq_line)
-        line.set_xy1(eq_line, line.get_x1(eq_line), curr_eq)
-        line.set_xy2(eq_line, bar_index, curr_eq)
-
-// Premium vs Discount rispetto all'Equilibrium di sessione
-is_premium  = not na(sess_high) and not na(sess_low) and close > ((sess_high + sess_low) / 2.0)
-is_discount = not na(sess_high) and not na(sess_low) and close < ((sess_high + sess_low) / 2.0)
+var box b_accum = na
+if show_accum and (accum_range < syminfo.mintick * 120)
+    b_accum := box.new(left=bar_index - accum_len, top=accum_high, right=bar_index, bottom=accum_low,
+                       bgcolor=col_accum, border_color=color.new(color.gray, 60),
+                       border_style=line.style_dotted, text="Accumulo LTF", text_size=size.tiny)
 
 // ==============================================================================
-// 4. FAIR VALUE GAPS (PULITI, SENZA SOVRAPPOSIZIONI DI TESTO)
+// 4. MANIPOLAZIONE (M) & ROTTURA STRUTTURALE CON IMBALANCE
 // ==============================================================================
-fvg_threshold = min_gap_ticks * syminfo.mintick
+// Manipolazione Bearish: sweep sopra l'accumulo in zona Premium
+is_manip_bear = is_htf_premium and (high > accum_high) and (close < high)
+// Manipolazione Bullish: sweep sotto l'accumulo in zona Discount
+is_manip_bull = is_htf_discount and (low < accum_low) and (close > low)
 
-is_bull_fvg = show_fvg and (low > high[2] + fvg_threshold)
-is_bear_fvg = show_fvg and (high < low[2] - fvg_threshold)
+var float last_manip_high = na
+var float last_manip_low  = na
 
-if is_bull_fvg
-    box.new(left=bar_index[2], top=low, right=bar_index + 4, bottom=high[2], 
-            bgcolor=col_bull_fvg, border_color=color.new(color.teal, 60), 
-            text=show_fvg_text ? "FVG" : "", text_size=size.tiny, text_color=color.teal)
+if is_manip_bear
+    last_manip_high := high
+    label.new(bar_index, high, "MANIPOLAZIONE (M)", yloc=yloc.abovebar,
+              color=color.purple, textcolor=color.white, style=label.style_label_down, size=size.tiny)
 
-if is_bear_fvg
-    box.new(left=bar_index[2], top=low[2], right=bar_index + 4, bottom=high, 
-            bgcolor=col_bear_fvg, border_color=color.new(color.maroon, 60), 
-            text=show_fvg_text ? "FVG" : "", text_size=size.tiny, text_color=color.maroon)
+if is_manip_bull
+    last_manip_low := low
+    label.new(bar_index, low, "MANIPOLAZIONE (M)", yloc=yloc.belowbar,
+              color=color.purple, textcolor=color.white, style=label.style_label_up, size=size.tiny)
 
-// ==============================================================================
-// 5. SMT DIVERGENCE (ANCORATA FISICAMENTE AI PIVOT SWING DELLE CANDELE)
-// ==============================================================================
-// Richiede dati DXY
-[dxy_h, dxy_l] = request.security(dxy_ticker, timeframe.period, [high, low])
+// Imbalance di rottura LTF (Displacement)
+ltf_fvg_bear = (low[2] - high) > (syminfo.mintick * 12)
+ltf_fvg_bull = (low - high[2]) > (syminfo.mintick * 12)
 
-// Riconoscimento rigoroso dei soli PIVOT (Swing Points reali), NON di ogni singola candela!
-ph = ta.pivothigh(high, pivot_bars, pivot_bars)
-pl = ta.pivotlow(low, pivot_bars, pivot_bars)
-
-// Pivot corrispondenti sul DXY
-dxy_ph = ta.pivothigh(dxy_h, pivot_bars, pivot_bars)
-dxy_pl = ta.pivotlow(dxy_l, pivot_bars, pivot_bars)
-
-// Memoria dell'ultimo pivot
-var float last_ph = na
-var float last_dxy_pl = na
-
-var float last_pl = na
-var float last_dxy_ph = na
-
-var int last_ph_idx = na
-var int last_pl_idx = na
-
-// SMT BEARISH: Il nostro asset crea un Higher High (sweep), ma DXY crea un Higher Low (non rompe il minimo)
-if not na(ph)
-    pivot_bar = bar_index - pivot_bars
-    if not na(last_ph) and not na(last_dxy_pl)
-        is_asset_hh = ph > last_ph
-        is_dxy_hl   = dxy_l[pivot_bars] > last_dxy_pl  // DXY ha fallito il lower low
-        
-        if is_asset_hh and is_dxy_hl and (in_london or in_ny)
-            label.new(pivot_bar, na, "SMT ▼", 
-                      yloc=yloc.abovebar, 
-                      color=color.red, 
-                      textcolor=color.white, 
-                      style=label.style_label_down, 
-                      size=size.tiny,
-                      tooltip="SMT Bearish Divergence: " + syminfo.ticker + " Higher High vs DXY Higher Low")
-    last_ph := ph
-    last_dxy_pl := dxy_l[pivot_bars]
-    last_ph_idx := pivot_bar
-
-// SMT BULLISH: Il nostro asset crea un Lower Low, ma DXY crea un Lower High (non rompe il massimo)
-if not na(pl)
-    pivot_bar = bar_index - pivot_bars
-    if not na(last_pl) and not na(last_dxy_ph)
-        is_asset_ll = pl < last_pl
-        is_dxy_lh   = dxy_h[pivot_bars] < last_dxy_ph  // DXY ha fallito l'higher high
-        
-        if is_asset_ll and is_dxy_lh and (in_london or in_ny)
-            label.new(pivot_bar, na, "SMT ▲", 
-                      yloc=yloc.belowbar, 
-                      color=color.green, 
-                      textcolor=color.white, 
-                      style=label.style_label_up, 
-                      size=size.tiny,
-                      tooltip="SMT Bullish Divergence: " + syminfo.ticker + " Lower Low vs DXY Lower High")
-    last_pl := pl
-    last_dxy_ph := dxy_h[pivot_bars]
-    last_pl_idx := pivot_bar
+is_breakout_retest_sell = is_htf_premium and (close < accum_low) and ltf_fvg_bear and not na(last_manip_high)
+is_breakout_retest_buy  = is_htf_discount and (close > accum_high) and ltf_fvg_bull and not na(last_manip_low)
 
 // ==============================================================================
-// 6. ALERT CONDITIONS CON PAYLOAD JSON PER WEBHOOK
+// 5. TRACCIAMENTO DEI LIVELLI OPERATIVI (NO R:R FISSO)
 // ==============================================================================
-alert_short = (in_london or in_ny) and is_premium and is_bear_fvg
-alert_long  = (in_london or in_ny) and is_discount and is_bull_fvg
+if show_targets and is_breakout_retest_sell
+    entry_p = accum_low
+    sl_p    = last_manip_high + (syminfo.mintick * 15)
+    tp1_p   = entry_p - ((entry_p - htf_range_low) * 0.50)
+    tp2_p   = htf_range_low
 
-if alert_short
-    alert('{"symbol": "' + syminfo.ticker + '", "timeframe": "' + timeframe.period + '", "action": "SELL", "price": ' + str.tostring(close) + ', "sl": ' + str.tostring(high[1]) + ', "session": "' + (in_london ? 'LONDON' : 'NEW_YORK') + '", "zone": "PREMIUM", "reason": "Bearish FVG in Killzone"}', alert.freq_once_per_bar_close)
+    box.new(left=bar_index[2], top=low[2], right=bar_index + 6, bottom=high,
+            bgcolor=color.new(color.purple, 80), border_color=color.purple, text="IMB Rottura", text_size=size.tiny)
 
-if alert_long
-    alert('{"symbol": "' + syminfo.ticker + '", "timeframe": "' + timeframe.period + '", "action": "BUY", "price": ' + str.tostring(close) + ', "sl": ' + str.tostring(low[1]) + ', "session": "' + (in_london ? 'LONDON' : 'NEW_YORK') + '", "zone": "DISCOUNT", "reason": "Bullish FVG in Killzone"}', alert.freq_once_per_bar_close)
+    line.new(bar_index, entry_p, bar_index + 15, entry_p, color=color.blue, width=2, style=line.style_solid)
+    line.new(bar_index, sl_p, bar_index + 15, sl_p, color=col_sl, width=2, style=line.style_solid)
+    line.new(bar_index, tp1_p, bar_index + 15, tp1_p, color=col_tp1, width=1, style=line.style_dashed)
+    line.new(bar_index, tp2_p, bar_index + 15, tp2_p, color=col_tp_fin, width=2, style=line.style_solid)
+
+    alert('{"symbol": "' + syminfo.ticker + '", "timeframe": "' + timeframe.period + '", "entry_type": "BREAKOUT_RETEST", "action": "SELL", "entry_price": ' + str.tostring(entry_p) + ', "sl_price": ' + str.tostring(sl_p) + ', "tp_50_eq": ' + str.tostring(tp1_p) + ', "tp_structural": ' + str.tostring(tp2_p) + ', "htf_key_level": "H4_PREMIUM_IMB"}', alert.freq_once_per_bar_close)
+
+if show_targets and is_breakout_retest_buy
+    entry_p = accum_high
+    sl_p    = last_manip_low - (syminfo.mintick * 15)
+    tp1_p   = entry_p + ((htf_range_high - entry_p) * 0.50)
+    tp2_p   = htf_range_high
+
+    box.new(left=bar_index[2], top=low, right=bar_index + 6, bottom=high[2],
+            bgcolor=color.new(color.purple, 80), border_color=color.purple, text="IMB Rottura", text_size=size.tiny)
+
+    line.new(bar_index, entry_p, bar_index + 15, entry_p, color=color.blue, width=2, style=line.style_solid)
+    line.new(bar_index, sl_p, bar_index + 15, sl_p, color=col_sl, width=2, style=line.style_solid)
+    line.new(bar_index, tp1_p, bar_index + 15, tp1_p, color=col_tp1, width=1, style=line.style_dashed)
+    line.new(bar_index, tp2_p, bar_index + 15, tp2_p, color=col_tp_fin, width=2, style=line.style_solid)
+
+    alert('{"symbol": "' + syminfo.ticker + '", "timeframe": "' + timeframe.period + '", "entry_type": "BREAKOUT_RETEST", "action": "BUY", "entry_price": ' + str.tostring(entry_p) + ', "sl_price": ' + str.tostring(sl_p) + ', "tp_50_eq": ' + str.tostring(tp1_p) + ', "tp_structural": ' + str.tostring(tp2_p) + ', "htf_key_level": "H4_DISCOUNT_IMB"}', alert.freq_once_per_bar_close)

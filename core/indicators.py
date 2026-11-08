@@ -1,239 +1,210 @@
 """
 Modulo Indicatori Istituzionali:
-- Fair Value Gap (FVG / Imbalance)
-- Dealing Range & Premium/Discount (Equilibrium 50%)
-- Killzones (London, New York)
-- Swings & Market Structure Shift (MSS)
+- Validazione Key Level HTF (Imbalance H4/D1, Rejection Block, Liquidity Sweeps)
+- Dealing Range HTF & Equilibrium (Filtro Premium / Discount 50%)
+- Finestre Operative Estese & Monitoraggio Cambi Periodo H1 / H4
+- Rilevamento Accumulazione LTF (Base di liquidità)
+- Rilevamento Manipolazione (Sweep) e Imbalance di Rottura (FVG)
+- Divergenza SMT con DXY
 """
 from dataclasses import dataclass
-from datetime import datetime, time
 from typing import List, Optional, Tuple
-import pandas as pd
 import numpy as np
+import pandas as pd
 
-from config import CONFIG_SESSION, CONFIG_STRATEGY
+from config import CONFIG_ASSET, CONFIG_HTF, CONFIG_SESSION
 
 
 @dataclass
-class FVG:
-    index: int
+class HTFKeyLevel:
+    level_type: str         # 'IMBALANCE_H4', 'REJECTION_BLOCK', 'LIQUIDITY_SWEEP'
     timestamp: pd.Timestamp
-    fvg_type: str        # 'BULLISH' o 'BEARISH'
     top: float
     bottom: float
     midpoint: float
+    direction: str          # 'BEARISH' o 'BULLISH'
     mitigated: bool = False
-    mitigated_at: Optional[pd.Timestamp] = None
 
 
 @dataclass
-class SwingPoint:
-    index: int
+class AccumulationZone:
+    start_time: pd.Timestamp
+    end_time: pd.Timestamp
+    high: float
+    low: float
+    midpoint: float
+    range_pips: float
+    timeframe: str          # 'M5' o 'M1'
+
+
+@dataclass
+class SMTEvent:
     timestamp: pd.Timestamp
-    price: float
-    swing_type: str      # 'HIGH' o 'LOW'
+    divergence_type: str    # 'BEARISH_SMT' o 'BULLISH_SMT'
+    primary_asset: str
+    correlated_asset: str
+    description: str
 
 
-def is_in_killzone(dt: pd.Timestamp) -> Tuple[bool, str]:
+def is_active_operating_window(dt: pd.Timestamp) -> Tuple[bool, str]:
     """
-    Verifica se un timestamp cade all'interno della London o New York Killzone.
-    Ritorna: (in_killzone: bool, session_name: str)
+    Verifica se il timestamp si trova nella finestra operativa (08:00 - 20:00 CET)
+    e identifica se coincide con un cambio di periodo H1 o H4.
     """
     t = dt.time()
-    
-    # London Killzone
-    if CONFIG_SESSION.LONDON_START <= t <= CONFIG_SESSION.LONDON_END:
-        return True, "LONDON"
-        
-    # New York Killzone
-    if CONFIG_SESSION.NY_START <= t <= CONFIG_SESSION.NY_END:
-        return True, "NEW_YORK"
-        
-    return False, "OUT_OF_SESSION"
+    if not (CONFIG_SESSION.ACTIVE_WINDOW_START <= t <= CONFIG_SESSION.ACTIVE_WINDOW_END):
+        return False, "OUT_OF_WINDOW"
+
+    minute = dt.minute
+    hour = dt.hour
+
+    is_h4_change = (hour % 4 == 0) and (minute < CONFIG_SESSION.MONITOR_H4_OPEN_MINUTES)
+    is_h1_change = minute < CONFIG_SESSION.MONITOR_H1_OPEN_MINUTES
+
+    if is_h4_change:
+        return True, "H4_PERIOD_OPEN"
+    elif is_h1_change:
+        return True, "H1_PERIOD_OPEN"
+    else:
+        return True, "IN_SESSION"
 
 
-def is_in_asia_range(dt: pd.Timestamp) -> bool:
-    """Verifica se il timestamp cade nel range Asiatico."""
-    t = dt.time()
-    return CONFIG_SESSION.ASIA_START <= t <= CONFIG_SESSION.ASIA_END
-
-
-def calculate_dealing_range(df: pd.DataFrame, lookback: int = 50) -> pd.DataFrame:
+def calculate_htf_range_and_equilibrium(df_htf: pd.DataFrame, lookback: int = 40) -> pd.DataFrame:
     """
-    Calcola il Dealing Range corrente su una finestra mobile (lookback):
-    - Range High (massimo recente)
-    - Range Low (minimo recente)
-    - Equilibrium (50%)
-    - Premium (>50%) / Discount (<50%)
+    Calcola il Dealing Range HTF (H4 o D1) e l'Equilibrium al 50%:
+    - Short consentiti SOLO se close > equilibrium (Premium)
+    - Long consentiti SOLO se close < equilibrium (Discount)
     """
-    res = df.copy()
-    res['range_high'] = res['high'].rolling(lookback).max()
-    res['range_low'] = res['low'].rolling(lookback).min()
-    res['equilibrium'] = (res['range_high'] + res['range_low']) / 2.0
-    
+    res = df_htf.copy()
+    res['htf_high'] = res['high'].rolling(lookback, min_periods=3).max()
+    res['htf_low'] = res['low'].rolling(lookback, min_periods=3).min()
+    res['equilibrium'] = (res['htf_high'] + res['htf_low']) / 2.0
     res['is_premium'] = res['close'] > res['equilibrium']
     res['is_discount'] = res['close'] < res['equilibrium']
     return res
 
 
-def find_fair_value_gaps(df: pd.DataFrame, pip_size: float = 0.0001, min_gap_pips: float = 1.0) -> List[FVG]:
+def find_htf_key_levels(df_h4: pd.DataFrame, pip_size: float = CONFIG_ASSET.PIP_SIZE_DEFAULT) -> List[HTFKeyLevel]:
     """
-    Rileva i Fair Value Gap (3-candle pattern):
-    - Bullish FVG: Low candela 3 > High candela 1 (Gap = Low[i] - High[i-2])
-    - Bearish FVG: High candela 3 < Low candela 1 (Gap = Low[i-2] - High[i])
-    Tiene traccia dell'eventuale mitigazione successiva.
+    Identifica i Key Levels HTF su H4:
+    1. Imbalance / FVG H4 non mitigati
+    2. Rejection Blocks (lunghe ombre di reiezione e sweep)
     """
-    fvgs: List[FVG] = []
-    min_gap = min_gap_pips * pip_size
+    levels: List[HTFKeyLevel] = []
+    if len(df_h4) < 3:
+        return levels
 
-    if len(df) < 3:
-        return fvgs
+    highs = df_h4['high'].values
+    lows = df_h4['low'].values
+    opens = df_h4['open'].values
+    closes = df_h4['close'].values
+    times = df_h4.index
 
-    highs = df['high'].values
-    lows = df['low'].values
-    times = df.index
-
-    for i in range(2, len(df)):
-        c1_high, c1_low = highs[i - 2], lows[i - 2]
-        c3_high, c3_low = highs[i], lows[i]
-
-        # Bullish FVG
-        if c3_low - c1_high >= min_gap:
-            fvg = FVG(
-                index=i - 1,
+    for i in range(2, len(df_h4)):
+        # Bearish FVG H4
+        if lows[i - 2] - highs[i] >= 2.0 * pip_size:
+            top = lows[i - 2]
+            bottom = highs[i]
+            levels.append(HTFKeyLevel(
+                level_type='IMBALANCE_H4',
                 timestamp=times[i - 1],
-                fvg_type='BULLISH',
-                top=c3_low,
-                bottom=c1_high,
-                midpoint=(c3_low + c1_high) / 2.0,
-            )
-            # Controllo mitigazione futura
-            for j in range(i + 1, len(df)):
-                if lows[j] <= fvg.midpoint: # Consequent Encroachment (50%) mitigato
-                    fvg.mitigated = True
-                    fvg.mitigated_at = times[j]
-                    break
-            fvgs.append(fvg)
+                top=top,
+                bottom=bottom,
+                midpoint=(top + bottom) / 2.0,
+                direction='BEARISH'
+            ))
 
-        # Bearish FVG
-        elif c1_low - c3_high >= min_gap:
-            fvg = FVG(
-                index=i - 1,
+        # Bullish FVG H4
+        elif lows[i] - highs[i - 2] >= 2.0 * pip_size:
+            top = lows[i]
+            bottom = highs[i - 2]
+            levels.append(HTFKeyLevel(
+                level_type='IMBALANCE_H4',
                 timestamp=times[i - 1],
-                fvg_type='BEARISH',
-                top=c1_low,
-                bottom=c3_high,
-                midpoint=(c1_low + c3_high) / 2.0,
-            )
-            for j in range(i + 1, len(df)):
-                if highs[j] >= fvg.midpoint:
-                    fvg.mitigated = True
-                    fvg.mitigated_at = times[j]
-                    break
-            fvgs.append(fvg)
+                top=top,
+                bottom=bottom,
+                midpoint=(top + bottom) / 2.0,
+                direction='BULLISH'
+            ))
 
-    return fvgs
+        # Rejection Block / Sweep di liquidità H4
+        candle_range = highs[i] - lows[i]
+        body = abs(closes[i] - opens[i])
+        upper_wick = highs[i] - max(opens[i], closes[i])
+        lower_wick = min(opens[i], closes[i]) - lows[i]
 
+        if candle_range >= 10.0 * pip_size:
+            if upper_wick >= body * 2.0:
+                levels.append(HTFKeyLevel(
+                    level_type='REJECTION_BLOCK',
+                    timestamp=times[i],
+                    top=highs[i],
+                    bottom=highs[i] - upper_wick,
+                    midpoint=highs[i] - (upper_wick / 2.0),
+                    direction='BEARISH'
+                ))
+            elif lower_wick >= body * 2.0:
+                levels.append(HTFKeyLevel(
+                    level_type='REJECTION_BLOCK',
+                    timestamp=times[i],
+                    top=lows[i] + lower_wick,
+                    bottom=lows[i],
+                    midpoint=lows[i] + (lower_wick / 2.0),
+                    direction='BULLISH'
+                ))
 
-def detect_swings(df: pd.DataFrame, left_bars: int = 3, right_bars: int = 3) -> List[SwingPoint]:
-    """Rileva swing high e swing low locali."""
-    swings: List[SwingPoint] = []
-    highs = df['high'].values
-    lows = df['low'].values
-    times = df.index
-
-    for i in range(left_bars, len(df) - right_bars):
-        curr_high = highs[i]
-        curr_low = lows[i]
-
-        # Swing High
-        if all(curr_high > highs[i - k] for k in range(1, left_bars + 1)) and \
-           all(curr_high > highs[i + k] for k in range(1, right_bars + 1)):
-            swings.append(SwingPoint(i, times[i], curr_high, 'HIGH'))
-
-        # Swing Low
-        if all(curr_low < lows[i - k] for k in range(1, left_bars + 1)) and \
-           all(curr_low < lows[i + k] for k in range(1, right_bars + 1)):
-            swings.append(SwingPoint(i, times[i], curr_low, 'LOW'))
-
-    return swings
+    return levels
 
 
-def detect_market_structure_shift(
-    df: pd.DataFrame, 
-    swings: List[SwingPoint]
-) -> List[dict]:
+def detect_accumulation_zone(
+    df: pd.DataFrame,
+    end_idx: int,
+    lookback: int = 15,
+    max_pips: float = 12.0,
+    timeframe: str = "M1",
+    pip_size: float = CONFIG_ASSET.PIP_SIZE_DEFAULT
+) -> Optional[AccumulationZone]:
     """
-    Identifica i Market Structure Shifts (MSS) con displacement:
-    - Bearish MSS: Candela decisa (close) sotto l'ultimo Swing Low rilevante
-    - Bullish MSS: Candela decisa (close) sopra l'ultimo Swing High rilevante
+    Rileva se un intervallo di barre costituisce una vera Accumulazione LTF (range compresso).
+    Questa zona funge ESCLUSIVAMENTE da base di liquidità per la successiva manipolazione.
     """
-    shifts = []
-    swing_highs = [s for s in swings if s.swing_type == 'HIGH']
-    swing_lows = [s for s in swings if s.swing_type == 'LOW']
+    if end_idx < lookback:
+        return None
 
-    closes = df['close'].values
-    times = df.index
+    slice_df = df.iloc[end_idx - lookback:end_idx]
+    high = slice_df['high'].max()
+    low = slice_df['low'].min()
+    range_pips = (high - low) / pip_size
 
-    # Cerca rottura strutturale
-    for sl in swing_lows:
-        # Cerca la prima candela successiva che chiude sotto il minimo dello swing low
-        subsequent_closes = np.where((df.index > sl.timestamp) & (closes < sl.price))[0]
-        if len(subsequent_closes) > 0:
-            first_break_idx = subsequent_closes[0]
-            shifts.append({
-                'type': 'BEARISH_MSS',
-                'broken_swing': sl,
-                'break_time': times[first_break_idx],
-                'break_index': first_break_idx,
-                'break_price': closes[first_break_idx]
-            })
-
-    for sh in swing_highs:
-        subsequent_closes = np.where((df.index > sh.timestamp) & (closes > sh.price))[0]
-        if len(subsequent_closes) > 0:
-            first_break_idx = subsequent_closes[0]
-            shifts.append({
-                'type': 'BULLISH_MSS',
-                'broken_swing': sh,
-                'break_time': times[first_break_idx],
-                'break_index': first_break_idx,
-                'break_price': closes[first_break_idx]
-            })
-
-@dataclass
-class SMTDivergence:
-    timestamp: pd.Timestamp
-    divergence_type: str    # 'BEARISH_SMT' o 'BULLISH_SMT'
-    primary_asset: str
-    correlated_asset: str
-    relation: str           # 'INVERSE' (DXY) o 'DIRECT' (GU/EU)
-    description: str
+    if range_pips <= max_pips and range_pips >= 2.5:
+        return AccumulationZone(
+            start_time=slice_df.index[0],
+            end_time=slice_df.index[-1],
+            high=round(high, 5),
+            low=round(low, 5),
+            midpoint=round((high + low) / 2.0, 5),
+            range_pips=round(range_pips, 1),
+            timeframe=timeframe
+        )
+    return None
 
 
 def detect_smt_divergence(
     primary_df: pd.DataFrame,
     benchmark_df: pd.DataFrame,
-    relation: str = "INVERSE",
     lookback: int = 5,
-    primary_name: str = "EU",
+    primary_name: str = "EURUSD",
     benchmark_name: str = "DXY"
-) -> List[SMTDivergence]:
+) -> List[SMTEvent]:
     """
-    Rileva le divergenze SMT (Smart Money Technique):
-    - Relazione INVERSA (EU/GU vs DXY):
-      * Bearish SMT: EU/GU fa Higher High ma DXY fa Higher Low (non rompe il minimo).
-      * Bullish SMT: EU/GU fa Lower Low ma DXY fa Lower High (non rompe il massimo).
-    - Relazione DIRETTA (EU vs GU):
-      * Bearish SMT: EU fa Higher High ma GU fallisce e fa Lower High (o viceversa).
-      * Bullish SMT: EU fa Lower Low ma GU fallisce e fa Higher Low (o viceversa).
+    Rileva Divergenze SMT con il DXY (relazione inversa):
+    - Bearish SMT: Primary fa Higher High, DXY fa Higher Low (mancata rottura dei minimi DXY).
+    - Bullish SMT: Primary fa Lower Low, DXY fa Lower High (mancata rottura dei massimi DXY).
     """
-    divergences: List[SMTDivergence] = []
-    
-    # Allinea gli indici temporali comuni
+    events: List[SMTEvent] = []
     common_idx = primary_df.index.intersection(benchmark_df.index)
     if len(common_idx) < lookback + 2:
-        return divergences
+        return events
 
     p_df = primary_df.loc[common_idx]
     b_df = benchmark_df.loc[common_idx]
@@ -245,60 +216,29 @@ def detect_smt_divergence(
     times = common_idx
 
     for i in range(lookback, len(common_idx)):
-        # Finestra precedente escludendo l'attuale
         p_prev_max = np.max(p_highs[i - lookback:i])
         p_prev_min = np.min(p_lows[i - lookback:i])
         b_prev_max = np.max(b_highs[i - lookback:i])
         b_prev_min = np.min(b_lows[i - lookback:i])
 
-        curr_p_high, curr_p_low = p_highs[i], p_lows[i]
-        curr_b_high, curr_b_low = b_highs[i], b_lows[i]
-        curr_time = times[i]
+        curr_p_h, curr_p_l = p_highs[i], p_lows[i]
+        curr_b_h, curr_b_l = b_highs[i], b_lows[i]
 
-        if relation == "INVERSE":
-            # BEARISH SMT: Primary fa Higher High, DXY NON fa Lower Low (Higher Low o tiene il supporto)
-            if (curr_p_high > p_prev_max) and (curr_b_low > b_prev_min):
-                divergences.append(SMTDivergence(
-                    timestamp=curr_time,
-                    divergence_type="BEARISH_SMT",
-                    primary_asset=primary_name,
-                    correlated_asset=benchmark_name,
-                    relation="INVERSE",
-                    description=f"{primary_name} Higher High vs {benchmark_name} Higher Low (Mancata rottura dei minimi DXY)"
-                ))
+        if (curr_p_h > p_prev_max) and (curr_b_l > b_prev_min):
+            events.append(SMTEvent(
+                timestamp=times[i],
+                divergence_type="BEARISH_SMT",
+                primary_asset=primary_name,
+                correlated_asset=benchmark_name,
+                description=f"{primary_name} HH vs {benchmark_name} HL"
+            ))
+        elif (curr_p_l < p_prev_min) and (curr_b_h < b_prev_max):
+            events.append(SMTEvent(
+                timestamp=times[i],
+                divergence_type="BULLISH_SMT",
+                primary_asset=primary_name,
+                correlated_asset=benchmark_name,
+                description=f"{primary_name} LL vs {benchmark_name} LH"
+            ))
 
-            # BULLISH SMT: Primary fa Lower Low, DXY NON fa Higher High (Lower High o fallimento estensione)
-            elif (curr_p_low < p_prev_min) and (curr_b_high < b_prev_max):
-                divergences.append(SMTDivergence(
-                    timestamp=curr_time,
-                    divergence_type="BULLISH_SMT",
-                    primary_asset=primary_name,
-                    correlated_asset=benchmark_name,
-                    relation="INVERSE",
-                    description=f"{primary_name} Lower Low vs {benchmark_name} Lower High (Mancata estensione massimi DXY)"
-                ))
-
-        elif relation == "DIRECT":
-            # BEARISH SMT: Primary fa Higher High, Bench fa Lower High
-            if (curr_p_high > p_prev_max) and (curr_b_high <= b_prev_max):
-                divergences.append(SMTDivergence(
-                    timestamp=curr_time,
-                    divergence_type="BEARISH_SMT",
-                    primary_asset=primary_name,
-                    correlated_asset=benchmark_name,
-                    relation="DIRECT",
-                    description=f"{primary_name} Higher High vs {benchmark_name} Lower High (Debolezza relativa istituzionale)"
-                ))
-            # BULLISH SMT: Primary fa Lower Low, Bench fa Higher Low
-            elif (curr_p_low < p_prev_min) and (curr_b_low >= b_prev_min):
-                divergences.append(SMTDivergence(
-                    timestamp=curr_time,
-                    divergence_type="BULLISH_SMT",
-                    primary_asset=primary_name,
-                    correlated_asset=benchmark_name,
-                    relation="DIRECT",
-                    description=f"{primary_name} Lower Low vs {benchmark_name} Higher Low (Forza relativa istituzionale)"
-                ))
-
-    return divergences
-
+    return events

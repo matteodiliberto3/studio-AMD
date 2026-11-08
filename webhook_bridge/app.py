@@ -1,27 +1,24 @@
 """
 FastAPI Webhook Server:
-Riceve gli alert JSON da TradingView (Pine Script), valida i vincoli istituzionali
-(Killzone, Premium/Discount, R:R minimo, Stop Loss) e registra/inoltra il segnale.
+Riceve gli alert JSON contestuali da TradingView (Pine Script A-M-D)
+e applica il filtraggio istituzionale (SL ancorato alla manipolazione, Target 50% ed esterno).
 """
 from datetime import datetime
 import json
 from pathlib import Path
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
-
-from config import CONFIG_RISK
+from fastapi import FastAPI
 from webhook_bridge.models import TradingViewAlertPayload, ValidationResult
 
 app = FastAPI(
-    title="FX Institutional Webhook Bridge",
-    description="Bridge per la ricezione e validazione automatica di segnali da TradingView ad Antigravity",
-    version="1.0.0"
+    title="FX Institutional A-M-D Bridge",
+    description="Bridge per la ricezione e validazione di segnali contestuali A-M-D",
+    version="2.0.0"
 )
 
 LOG_FILE = Path("webhook_bridge/alerts_history.json")
 
 
-def save_alert_to_history(data: dict):
+def save_alert(data: dict):
     history = []
     if LOG_FILE.exists():
         try:
@@ -29,86 +26,66 @@ def save_alert_to_history(data: dict):
                 history = json.load(f)
         except Exception:
             history = []
-    
-    history.append({
-        "received_at": datetime.now().isoformat(),
-        "payload": data
-    })
-    
+    history.append({"received_at": datetime.now().isoformat(), "payload": data})
     with open(LOG_FILE, "w", encoding="utf-8") as f:
         json.dump(history, f, indent=2)
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "server_time": datetime.now().isoformat()}
+    return {"status": "ok", "version": "2.0.0", "server_time": datetime.now().isoformat()}
 
 
 @app.post("/webhook", response_model=ValidationResult)
 async def receive_tradingview_alert(payload: TradingViewAlertPayload):
-    """
-    Endpoint Webhook invocato da TradingView:
-    Valida le regole operative secondo il framework:
-    1. Sell valido solo in zona Premium
-    2. Buy valido solo in zona Discount
-    3. Sessione limitata a London o New York
-    4. Calcolo automatico di TP in base al Risk:Reward minimo (1:2.5 / 1:3) se non fornito
-    """
     rejections = []
+    pip_size = 0.0001 if "JPY" not in payload.symbol.upper() else 0.01
 
-    # 1. Regola Premium / Discount
-    if payload.action == "SELL" and payload.zone != "PREMIUM":
-        rejections.append("Violazione Framework: Operazione SELL consentita esclusivamente in zona PREMIUM.")
-        
-    if payload.action == "BUY" and payload.zone != "DISCOUNT":
-        rejections.append("Violazione Framework: Operazione BUY consentita esclusivamente in zona DISCOUNT.")
-
-    # 2. Regola Killzone
-    if payload.session.upper() not in ["LONDON", "NEW_YORK"]:
-        rejections.append(f"Violazione Framework: Sessione '{payload.session}' non consentita (consentite: LONDON, NEW_YORK).")
-
-    # Calcolo SL e TP
-    pip_factor = 0.0001 if "JPY" not in payload.symbol.upper() else 0.01
-    sl_distance = abs(payload.price - payload.sl)
-    sl_pips = round(sl_distance / pip_factor, 1)
-
-    # Calcolo automatico TP minimo se non specificato
-    min_tp_distance = sl_distance * CONFIG_RISK.MIN_RISK_REWARD
+    # 1. Validazione Direzione e Posizionamento dello Stop Loss
     if payload.action == "SELL":
-        calculated_tp = payload.tp if payload.tp else (payload.price - min_tp_distance)
-    else:
-        calculated_tp = payload.tp if payload.tp else (payload.price + min_tp_distance)
+        if payload.sl_price <= payload.entry_price:
+            rejections.append("Violazione: Per SELL lo Stop Loss deve essere rigorosamente sopra l'entry (estremo manipolazione).")
+        if payload.tp_structural >= payload.entry_price or payload.tp_50_eq >= payload.entry_price:
+            rejections.append("Violazione: I target SELL devono trovarsi sotto il prezzo di entrata.")
+    elif payload.action == "BUY":
+        if payload.sl_price >= payload.entry_price:
+            rejections.append("Violazione: Per BUY lo Stop Loss deve essere rigorosamente sotto l'entry (estremo manipolazione).")
+        if payload.tp_structural <= payload.entry_price or payload.tp_50_eq <= payload.entry_price:
+            rejections.append("Violazione: I target BUY devono trovarsi sopra il prezzo di entrata.")
 
-    tp_distance = abs(calculated_tp - payload.price)
-    rr = round(tp_distance / sl_distance, 2) if sl_distance > 0 else 0.0
+    sl_dist = abs(payload.entry_price - payload.sl_price)
+    sl_pips = round(sl_dist / pip_size, 1)
 
-    if rr < CONFIG_RISK.MIN_RISK_REWARD:
-        rejections.append(f"Risk:Reward insufficiente ({rr}R < target {CONFIG_RISK.MIN_RISK_REWARD}R).")
+    tp_dist = abs(payload.tp_structural - payload.entry_price)
+    rr = round(tp_dist / sl_dist, 2) if sl_dist > 0 else 0.0
+
+    # Controllo R:R strutturale minimo (1:2 minimo atteso su target strutturale)
+    if rr < 1.8:
+        rejections.append(f"Risk:Reward strutturale non sufficiente ({rr}R < target 1.8R minimo).")
 
     accepted = len(rejections) == 0
-    status_label = "APPROVED_FOR_EXECUTION" if accepted else "REJECTED_BY_FRAMEWORK"
+    status = "APPROVED_INSTITUTIONAL_ENTRY" if accepted else "REJECTED_BY_FRAMEWORK"
 
     result = ValidationResult(
         accepted=accepted,
-        status=status_label,
+        status=status,
         symbol=payload.symbol,
+        entry_type=payload.entry_type,
         action=payload.action,
-        entry_price=payload.price,
-        sl=payload.sl,
-        tp=round(calculated_tp, 5),
+        entry_price=payload.entry_price,
+        sl_price=payload.sl_price,
+        tp_50_eq=payload.tp_50_eq,
+        tp_structural=payload.tp_structural,
         sl_pips=sl_pips,
-        estimated_rr=rr,
+        structural_rr=rr,
+        htf_key_level=payload.htf_key_level,
         rejection_reasons=rejections
     )
 
-    # Log persistente dell'evento
-    save_alert_to_history({
+    save_alert({
         "alert": payload.model_dump(),
         "validation": result.model_dump()
     })
 
-    print(f"\n[ALERT WEBHOOK] {payload.symbol} {payload.action} @ {payload.price} | Esito: {status_label}")
-    if not accepted:
-        print(f"  Motivi rifiuto: {rejections}")
-
+    print(f"\n[ALERT A-M-D] {payload.symbol} {payload.action} ({payload.entry_type}) | Esito: {status} | R:R={rr}R | SL={sl_pips}p")
     return result

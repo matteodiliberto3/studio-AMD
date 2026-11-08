@@ -1,87 +1,58 @@
 """
-Suite di Test Automatizzata per:
-1. Resampling e Indicatori (FVG, Dealing Range, Killzones)
-2. FastAPI Webhook Validation Logic
+Suite di Test Automatizzata per il Framework A-M-D Rifattorizzato:
+1. Validazione Finestre Operative e Cambi Periodo (08:00-20:00 CET)
+2. Dealing Range HTF ed Equilibrium 50%
+3. Validazione Webhook Bridge con i campi contestuali A-M-D
 """
 import pandas as pd
 import pytest
 from starlette.testclient import TestClient
 
-from config import CONFIG_RISK
-from core.data_loader import resample_candles
 from core.indicators import (
-    calculate_dealing_range,
-    detect_smt_divergence,
-    find_fair_value_gaps,
-    is_in_killzone
+    calculate_htf_range_and_equilibrium,
+    is_active_operating_window
 )
 from webhook_bridge.app import app
 
 
-def test_killzone_filtering():
-    # 09:30 CET -> London Killzone
-    ts_london = pd.Timestamp("2026-10-15 09:30:00", tz="Europe/Rome")
-    in_kz, sess = is_in_killzone(ts_london)
-    assert in_kz is True
-    assert sess == "LONDON"
+def test_extended_operating_window_and_period_changes():
+    # 08:05 CET -> In finestra operativa (H4 period open)
+    ts_h4 = pd.Timestamp("2026-10-15 08:05:00", tz="Europe/Rome")
+    is_active, tag = is_active_operating_window(ts_h4)
+    assert is_active is True
+    assert tag == "H4_PERIOD_OPEN"
 
-    # 14:30 CET -> New York Killzone
-    ts_ny = pd.Timestamp("2026-10-15 14:30:00", tz="Europe/Rome")
-    in_kz, sess = is_in_killzone(ts_ny)
-    assert in_kz is True
-    assert sess == "NEW_YORK"
+    # 17:05 CET -> In finestra estesa New York PM / London Close (H1 period open)
+    ts_h1 = pd.Timestamp("2026-10-15 17:05:00", tz="Europe/Rome")
+    is_active, tag = is_active_operating_window(ts_h1)
+    assert is_active is True
+    assert tag == "H1_PERIOD_OPEN"
 
-    # 22:00 CET -> Out of session
-    ts_out = pd.Timestamp("2026-10-15 22:00:00", tz="Europe/Rome")
-    in_kz, sess = is_in_killzone(ts_out)
-    assert in_kz is False
-    assert sess == "OUT_OF_SESSION"
-
-
-def test_smt_divergence_detection():
-    # Asset 1 (EURUSD) fa Higher High
-    idx = pd.date_range("2026-10-15 09:00", periods=6, freq="5min")
-    eu_data = {
-        'high': [1.1100, 1.1110, 1.1105, 1.1115, 1.1120, 1.1130],
-        'low':  [1.1080, 1.1090, 1.1095, 1.1100, 1.1105, 1.1110],
-        'open': [1.1090, 1.1100, 1.1100, 1.1110, 1.1110, 1.1120],
-        'close': [1.1100, 1.1105, 1.1110, 1.1115, 1.1115, 1.1125]
-    }
-    df_eu = pd.DataFrame(eu_data, index=idx)
-
-    # Benchmark (DXY) NON fa Lower Low (fa un Higher Low -> Bearish SMT)
-    dxy_data = {
-        'high': [103.50, 103.40, 103.45, 103.40, 103.35, 103.45],
-        'low':  [103.20, 103.10, 103.15, 103.25, 103.30, 103.35], # Non rompe 103.10!
-        'open': [103.40, 103.30, 103.25, 103.30, 103.30, 103.40],
-        'close': [103.30, 103.20, 103.20, 103.35, 103.35, 103.40]
-    }
-    df_dxy = pd.DataFrame(dxy_data, index=idx)
-
-    smts = detect_smt_divergence(df_eu, df_dxy, relation="INVERSE", lookback=4)
-    assert len(smts) > 0
-    assert any(s.divergence_type == "BEARISH_SMT" for s in smts)
+    # 22:30 CET -> Fuori finestra operativa
+    ts_out = pd.Timestamp("2026-10-15 22:30:00", tz="Europe/Rome")
+    is_active, tag = is_active_operating_window(ts_out)
+    assert is_active is False
+    assert tag == "OUT_OF_WINDOW"
 
 
-def test_dealing_range_calculation():
-
+def test_htf_dealing_range_equilibrium():
     data = {
-        'open': [1.1000, 1.1020, 1.1010, 1.1040],
-        'high': [1.1010, 1.1030, 1.1020, 1.1050],
-        'low': [1.0990, 1.1010, 1.1000, 1.1030],
-        'close': [1.1005, 1.1015, 1.1010, 1.1045],
-        'volume': [100, 150, 120, 200]
+        'open': [1.1000, 1.1050, 1.1100, 1.1150],
+        'high': [1.1050, 1.1100, 1.1150, 1.1200],
+        'low':  [1.0950, 1.1000, 1.1050, 1.1100],
+        'close': [1.1020, 1.1080, 1.1120, 1.1160]
     }
-    df = pd.DataFrame(data, index=pd.date_range("2026-10-15 08:00", periods=4, freq="5min"))
-    df_dr = calculate_dealing_range(df, lookback=4)
-    
-    # Range High = 1.1050, Range Low = 1.0990 -> Eq = 1.1020
-    assert df_dr.iloc[-1]['equilibrium'] == pytest.approx(1.1020)
+    df = pd.DataFrame(data, index=pd.date_range("2026-10-15", periods=4, freq="4h"))
+    df_dr = calculate_htf_range_and_equilibrium(df, lookback=4)
+
+    # Range High = 1.1200, Range Low = 1.0950 -> Eq = 1.1075
+    assert df_dr.iloc[-1]['equilibrium'] == pytest.approx(1.1075)
+    # Close 1.1160 > 1.1075 -> Premium Zone (solo Short consentiti)
     assert bool(df_dr.iloc[-1]['is_premium']) is True
     assert bool(df_dr.iloc[-1]['is_discount']) is False
 
 
-def test_webhook_bridge_validation():
+def test_webhook_bridge_contextual_validation():
     client = TestClient(app)
 
     # 1. Health check
@@ -89,35 +60,29 @@ def test_webhook_bridge_validation():
     assert res_health.status_code == 200
     assert res_health.json()["status"] == "ok"
 
-    # 2. Valid Sell alert in London Premium
+    # 2. Alert Valido: Breakout Retest Sell con SL oltre la manipolazione
     valid_payload = {
         "symbol": "EURUSD",
-        "timeframe": "5",
+        "timeframe": "M1",
+        "entry_type": "BREAKOUT_RETEST",
         "action": "SELL",
-        "price": 1.11610,
-        "sl": 1.11700,
-        "session": "LONDON",
-        "zone": "PREMIUM",
-        "reason": "Bearish FVG retest on H4 IMB"
+        "entry_price": 1.11530,
+        "sl_price": 1.11620,         # Estremo manipolazione (9 pips)
+        "tp_50_eq": 1.11300,         # 50% Equilibrium
+        "tp_structural": 1.11100,    # Target liquidità esterna (43 pips -> 4.77 R)
+        "htf_key_level": "H4_PREMIUM_IMB"
     }
     res_valid = client.post("/webhook", json=valid_payload)
     assert res_valid.status_code == 200
     data = res_valid.json()
     assert data["accepted"] is True
-    assert data["status"] == "APPROVED_FOR_EXECUTION"
+    assert data["status"] == "APPROVED_INSTITUTIONAL_ENTRY"
     assert data["sl_pips"] == 9.0
-    assert data["estimated_rr"] >= CONFIG_RISK.MIN_RISK_REWARD
+    assert data["structural_rr"] >= 4.0
 
-    # 3. Invalid Sell in Discount zone
-    invalid_zone_payload = dict(valid_payload, zone="DISCOUNT")
-    res_invalid_zone = client.post("/webhook", json=invalid_zone_payload)
-    data_inv = res_invalid_zone.json()
+    # 3. Alert Invalido: Stop Loss posizionato male (sotto l'entry su un SELL)
+    invalid_sl_payload = dict(valid_payload, sl_price=1.11400)
+    res_inv = client.post("/webhook", json=invalid_sl_payload)
+    data_inv = res_inv.json()
     assert data_inv["accepted"] is False
-    assert "Violazione Framework: Operazione SELL consentita esclusivamente in zona PREMIUM." in data_inv["rejection_reasons"]
-
-    # 4. Invalid session
-    invalid_sess_payload = dict(valid_payload, session="ASIA")
-    res_invalid_sess = client.post("/webhook", json=invalid_sess_payload)
-    data_sess = res_invalid_sess.json()
-    assert data_sess["accepted"] is False
-    assert any("Sessione 'ASIA' non consentita" in r for r in data_sess["rejection_reasons"])
+    assert any("Stop Loss deve essere rigorosamente sopra l'entry" in r for r in data_inv["rejection_reasons"])

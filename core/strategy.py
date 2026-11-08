@@ -1,235 +1,376 @@
 """
-Modulo Strategia Operativa:
-Implementazione del ciclo A-M-D con logica gerarchica M5 (default) vs M1 (radiografia).
+Modulo Strategia Operativa Istituzionale A-M-D:
+Sequenza: Key Level HTF -> Accumulazione LTF -> Manipolazione -> Rottura con Imbalance -> Distribuzione.
+
+Due sole modalità di ingresso:
+1. ENTRY_MANIPULATION (Entry 1 - Aggressiva sul picco di manipolazione del Key Level)
+2. ENTRY_POST_BREAKOUT_RETEST (Entry 2 - Conservativa sul retest dell'Imbalance / bordo rotto)
 """
 from dataclasses import dataclass
 from typing import List, Optional
-import pandas as pd
 import numpy as np
+import pandas as pd
 
-from config import CONFIG_RISK, CONFIG_SESSION, CONFIG_STRATEGY
+from config import (
+    CONFIG_ASSET,
+    CONFIG_EXEC,
+    EntryType
+)
 from core.indicators import (
-    calculate_dealing_range,
-    detect_swings,
-    find_fair_value_gaps,
-    is_in_killzone,
-    FVG
+    HTFKeyLevel,
+    calculate_htf_range_and_equilibrium,
+    detect_accumulation_zone,
+    find_htf_key_levels,
+    is_active_operating_window
 )
 
 
 @dataclass
-class Trade:
+class InstitutionalTrade:
     trade_id: int
-    symbol: str
-    direction: str          # 'SHORT' o 'LONG'
+    entry_type: EntryType
+    timeframe: str              # 'M5' o 'M1'
+    direction: str              # 'BUY' o 'SELL'
     entry_time: pd.Timestamp
     entry_price: float
     stop_loss: float
-    take_profit: float
+    tp_50_eq: float             # Target 1 (Parziale al 50% del leg/range)
+    tp_structural: float        # Target Finale (Liquidità opposta)
     sl_pips: float
-    target_rr: float
-    execution_timeframe: str # 'M5' o 'M1'
-    reason: str
+    htf_key_level: str
+    mae_pips: float = 0.0       # Maximum Adverse Excursion (Drawdown massimo sofferto)
+    hit_target_1: bool = False  # Se ha raggiunto il parziale al 50%
+    strict_win: bool = False    # Se ha raggiunto il Target Finale senza toccare lo SL iniziale
+    adjusted_win: bool = False  # Se ha incassato profitto (almeno TP1 + trailing)
+    outcome: str = "RUNNING"    # 'STRICT_WIN', 'ADJUSTED_WIN', 'LOSS', 'RUNNING'
     exit_time: Optional[pd.Timestamp] = None
-    exit_price: Optional[float] = None
-    outcome: Optional[str] = None    # 'WIN', 'LOSS', 'RUNNING'
-    pnl_pips: Optional[float] = None
     realized_rr: Optional[float] = None
 
 
-class AMDMultiTimeframeEngine:
-    def __init__(self, symbol: str = "EURUSD", pip_size: float = 0.0001):
-        self.symbol = symbol
+class InstitutionalAMDEngine:
+    def __init__(self, pip_size: float = CONFIG_ASSET.PIP_SIZE_DEFAULT):
         self.pip_size = pip_size
 
-    def analyze_and_backtest(
+    def analyze_market(
         self,
         df_m1: pd.DataFrame,
         df_m5: pd.DataFrame,
-        df_h4: Optional[pd.DataFrame] = None
-    ) -> List[Trade]:
+        df_h4: pd.DataFrame
+    ) -> List[InstitutionalTrade]:
         """
-        Esegue il backtest del modello su dati storici:
-        1. Rileva zone di interesse HTF (H4 FVG/IMB)
-        2. Analizza le sessioni attive (London / New York Killzones)
-        3. Verifica il filtro Premium / Discount
-        4. Decide se eseguire su M5 (default) o scendere su M1 (radiografia)
-        5. Simula l'esecuzione a mercato con SL e TP
+        Esegue l'analisi completa:
+        1. Identifica Key Levels HTF su H4 (Imbalance H4 e Rejection Blocks)
+        2. Calcola Dealing Range HTF ed Equilibrium 50% (Filtro Premium / Discount)
+        3. Valuta M5 (default): se visibile a corpo esegue su M5.
+           Se la reazione è compressa in una singola wick, attiva M1 ("raggi X").
         """
-        trades: List[Trade] = []
-        trade_counter = 1
+        trades: List[InstitutionalTrade] = []
+        trade_id = 1
 
-        # 1. Rileva Imbalance su H4 se disponibile, altrimenti su M5
-        h4_fvgs = find_fair_value_gaps(df_h4 if df_h4 is not None else df_m5, pip_size=self.pip_size, min_gap_pips=4.0)
+        df_h4_dr = calculate_htf_range_and_equilibrium(df_h4)
+        htf_levels = find_htf_key_levels(df_h4, pip_size=self.pip_size)
 
-        # 2. Calcola Dealing Range su M5
-        df_m5_dr = calculate_dealing_range(df_m5, lookback=CONFIG_STRATEGY.DEALING_RANGE_LOOKBACK)
+        m5_times = df_m5.index
+        m5_highs = df_m5['high'].values
+        m5_lows = df_m5['low'].values
+        m5_opens = df_m5['open'].values
+        m5_closes = df_m5['close'].values
 
-        # Raggruppa i dati per giornata/sessione
-        m5_index_times = df_m5_dr.index
-
-        # Itera sulle candele M5
-        for i in range(10, len(df_m5_dr) - 1):
-            curr_time = m5_index_times[i]
-            in_kz, session_name = is_in_killzone(curr_time)
-            
-            if not in_kz:
+        i = 15
+        while i < len(df_m5) - 30:
+            t_curr = m5_times[i]
+            is_valid_time, time_tag = is_active_operating_window(t_curr)
+            if not is_valid_time:
+                i += 1
                 continue
 
-            row_m5 = df_m5_dr.iloc[i]
-            prev_m5 = df_m5_dr.iloc[i - 1]
-            
-            # --- SCENARIO SHORT (Reazione ad Imbalance Bearish in Premium Zone) ---
-            if row_m5['is_premium']:
-                # Controlla se il prezzo tocca un H4 Bearish FVG
-                touching_h4_imb = any(
-                    fvg.fvg_type == 'BEARISH' and fvg.bottom <= row_m5['high'] <= fvg.top * 1.002
-                    for fvg in h4_fvgs if fvg.timestamp < curr_time
+            past_h4 = df_h4_dr[df_h4_dr.index <= t_curr]
+            if len(past_h4) == 0:
+                i += 1
+                continue
+            curr_h4_row = past_h4.iloc[-1]
+            htf_is_premium = curr_h4_row['is_premium']
+            htf_is_discount = curr_h4_row['is_discount']
+            htf_high = curr_h4_row['htf_high']
+            htf_low = curr_h4_row['htf_low']
+
+            active_htf_levels = [lvl for lvl in htf_levels if lvl.timestamp <= t_curr]
+            if not active_htf_levels:
+                i += 1
+                continue
+
+            new_trades = []
+
+            # --- SCENARIO SHORT: In Premium Zone (>50% HTF), test di Key Level Bearish ---
+            if htf_is_premium:
+                bearish_poi = next(
+                    (lvl for lvl in active_htf_levels if lvl.direction == 'BEARISH' and m5_highs[i] >= lvl.bottom * 0.999),
+                    None
                 )
-                
-                # Se non c'è H4 FVG, consideriamo il test del recente Range High
-                manipulating_high = (row_m5['high'] > row_m5['range_high'] * 0.9995) or touching_h4_imb
+                if bearish_poi:
+                    m5_range = m5_highs[i] - m5_lows[i]
+                    m5_upper_wick = m5_highs[i] - max(m5_opens[i], m5_closes[i])
+                    is_compressed_wick = (m5_upper_wick > (m5_range * 0.50)) and (m5_range > 0.0006)
 
-                if manipulating_high:
-                    # VALUTAZIONE M5 vs M1:
-                    # Se M5 ha una reiezione compressa in una singola wick senza struttura chiara:
-                    candle_range = row_m5['high'] - row_m5['low']
-                    body = abs(row_m5['close'] - row_m5['open'])
-                    upper_wick = row_m5['high'] - max(row_m5['close'], row_m5['open'])
-                    is_compressed_wick = (upper_wick > body * 1.5) and (candle_range > 0.0008)
+                    target_tf = "M1" if is_compressed_wick else "M5"
+                    data_source = df_m1 if is_compressed_wick else df_m5
 
-                    if is_compressed_wick:
-                        # NECESSARIA RADIOGRAFIA SU M1
-                        trade = self._evaluate_m1_radiography(
-                            df_m1, 
-                            start_time=curr_time - pd.Timedelta(minutes=15),
-                            end_time=curr_time + pd.Timedelta(minutes=30),
-                            manipulation_extreme=row_m5['high'],
-                            direction='SHORT',
-                            trade_id=trade_counter
-                        )
-                        if trade:
-                            trades.append(trade)
-                            trade_counter += 1
-                    else:
-                        # M5 HA STRUTTURA CHIARA (candela decisa sotto MSS)
-                        if row_m5['close'] < prev_m5['low']: # MSS su M5
-                            sl_price = row_m5['high'] + (2.0 * self.pip_size)
-                            entry_price = row_m5['close']
-                            sl_pips = (sl_price - entry_price) / self.pip_size
-                            
-                            if sl_pips <= 20.0: # Limite ragionevole per M5
-                                tp_price = entry_price - (sl_pips * CONFIG_RISK.MIN_RISK_REWARD * self.pip_size)
-                                trade = Trade(
-                                    trade_id=trade_counter,
-                                    symbol=self.symbol,
-                                    direction='SHORT',
-                                    entry_time=curr_time,
-                                    entry_price=entry_price,
-                                    stop_loss=sl_price,
-                                    take_profit=tp_price,
-                                    sl_pips=round(sl_pips, 1),
-                                    target_rr=CONFIG_RISK.MIN_RISK_REWARD,
-                                    execution_timeframe='M5',
-                                    reason=f"M5 Multi-Candle MSS in {session_name} Killzone (Premium Zone)"
-                                )
-                                trades.append(trade)
-                                trade_counter += 1
+                    new_trades = self._evaluate_amd_sequence(
+                        df_ltf=data_source,
+                        timeframe=target_tf,
+                        center_time=t_curr,
+                        direction="SELL",
+                        htf_level=bearish_poi,
+                        opposite_target=htf_low,
+                        trade_id_start=trade_id
+                    )
 
-        # Simula l'esito dei trade su M1
-        self._simulate_outcomes(trades, df_m1)
+            # --- SCENARIO LONG: In Discount Zone (<50% HTF), test di Key Level Bullish ---
+            elif htf_is_discount:
+                bullish_poi = next(
+                    (lvl for lvl in active_htf_levels if lvl.direction == 'BULLISH' and m5_lows[i] <= lvl.top * 1.001),
+                    None
+                )
+                if bullish_poi:
+                    m5_range = m5_highs[i] - m5_lows[i]
+                    m5_lower_wick = min(m5_opens[i], m5_closes[i]) - m5_lows[i]
+                    is_compressed_wick = (m5_lower_wick > (m5_range * 0.50)) and (m5_range > 0.0006)
+
+                    target_tf = "M1" if is_compressed_wick else "M5"
+                    data_source = df_m1 if is_compressed_wick else df_m5
+
+                    new_trades = self._evaluate_amd_sequence(
+                        df_ltf=data_source,
+                        timeframe=target_tf,
+                        center_time=t_curr,
+                        direction="BUY",
+                        htf_level=bullish_poi,
+                        opposite_target=htf_high,
+                        trade_id_start=trade_id
+                    )
+
+            if new_trades:
+                for tr in new_trades:
+                    self._simulate_contextual_trade(tr, df_m1)
+                    trades.append(tr)
+                    trade_id += 1
+                # Avanza per non duplicare la stessa finestra di accumulazione
+                i += 15
+            else:
+                i += 1
+
         return trades
 
-    def _evaluate_m1_radiography(
+    def _evaluate_amd_sequence(
         self,
-        df_m1: pd.DataFrame,
-        start_time: pd.Timestamp,
-        end_time: pd.Timestamp,
-        manipulation_extreme: float,
+        df_ltf: pd.DataFrame,
+        timeframe: str,
+        center_time: pd.Timestamp,
         direction: str,
-        trade_id: int
-    ) -> Optional[Trade]:
-        """
-        Analizza i dati a 1 minuto per trovare il pattern preciso di manipolazione e MSS
-        con Stop Loss ridotto al minimo.
-        """
-        m1_slice = df_m1.loc[start_time:end_time]
-        if len(m1_slice) < 5:
-            return None
+        htf_level: HTFKeyLevel,
+        opposite_target: float,
+        trade_id_start: int
+    ) -> List[InstitutionalTrade]:
+        trades = []
+        delta_pre = pd.Timedelta(minutes=30 if timeframe == "M1" else 100)
+        delta_post = pd.Timedelta(minutes=45 if timeframe == "M1" else 150)
+        window = df_ltf.loc[center_time - delta_pre:center_time + delta_post]
+        if len(window) < 10:
+            return trades
 
-        swings_m1 = detect_swings(m1_slice, left_bars=2, right_bars=2)
-        
-        if direction == 'SHORT':
-            swing_lows = [s for s in swings_m1 if s.swing_type == 'LOW']
-            if not swing_lows:
-                return None
+        times = window.index
+        highs = window['high'].values
+        lows = window['low'].values
+        closes = window['close'].values
 
-            last_sl = swing_lows[-1]
-            # Cerca rottura decisa di last_sl su M1
-            broken_slice = m1_slice[m1_slice.index > last_sl.timestamp]
-            breaks = broken_slice[broken_slice['close'] < last_sl.price]
-            
-            if len(breaks) > 0:
-                mss_bar = breaks.iloc[0]
-                entry_time = mss_bar.name
-                
-                # Retest dell'imbalance M1 o del livello rotto
-                entry_price = last_sl.price
-                sl_price = manipulation_extreme + (1.5 * self.pip_size)
-                sl_pips = (sl_price - entry_price) / self.pip_size
+        mid_idx = min(8, len(window) // 2)
+        accum = detect_accumulation_zone(window, end_idx=mid_idx, lookback=mid_idx, timeframe=timeframe, pip_size=self.pip_size)
+        if accum is None:
+            # Fallback range sui dati recenti
+            accum_h = np.max(highs[:mid_idx])
+            accum_l = np.min(lows[:mid_idx])
+        else:
+            accum_h = accum.high
+            accum_l = accum.low
 
-                # Solo se rispetta il vincolo di stop stretto
-                if 4.0 <= sl_pips <= CONFIG_RISK.MAX_SL_PIPS_M1:
-                    tp_price = entry_price - (sl_pips * CONFIG_RISK.MIN_RISK_REWARD * self.pip_size)
-                    return Trade(
-                        trade_id=trade_id,
-                        symbol=self.symbol,
-                        direction='SHORT',
-                        entry_time=entry_time,
-                        entry_price=round(entry_price, 5),
-                        stop_loss=round(sl_price, 5),
-                        take_profit=round(tp_price, 5),
-                        sl_pips=round(sl_pips, 1),
-                        target_rr=CONFIG_RISK.MIN_RISK_REWARD,
-                        execution_timeframe='M1',
-                        reason="M1 Radiografia: Sweep IMB H4 -> Micro-MSS -> Retest con SL Millimetrico"
-                    )
-        return None
+        found_manip = False
+        manip_idx = -1
+        manip_price = 0.0
 
-    def _simulate_outcomes(self, trades: List[Trade], df_m1: pd.DataFrame):
-        """Simula il raggiungimento di TP o SL candela per candela."""
-        highs = df_m1['high']
-        lows = df_m1['low']
-        
-        for trade in trades:
-            future_data = df_m1[df_m1.index > trade.entry_time]
-            if len(future_data) == 0:
-                trade.outcome = 'RUNNING'
-                continue
+        # Cerca Manipolazione (M)
+        for j in range(mid_idx, min(mid_idx + 15, len(window))):
+            if direction == "SELL" and highs[j] > accum_h:
+                found_manip = True
+                manip_idx = j
+                manip_price = highs[j]
+                break
+            elif direction == "BUY" and lows[j] < accum_l:
+                found_manip = True
+                manip_idx = j
+                manip_price = lows[j]
+                break
 
-            hit_sl = False
-            hit_tp = False
+        if not found_manip:
+            return trades
 
-            for t_idx, row in future_data.iterrows():
-                h, l = row['high'], row['low']
-                
-                if trade.direction == 'SHORT':
-                    if h >= trade.stop_loss:
-                        trade.exit_time = t_idx
-                        trade.exit_price = trade.stop_loss
-                        trade.outcome = 'LOSS'
-                        trade.pnl_pips = -trade.sl_pips
+        # 1. ENTRY_MANIPULATION (Aggressiva: sul picco di manipolazione)
+        t_manip = times[manip_idx]
+        if direction == "SELL":
+            sl_price = manip_price + (CONFIG_EXEC.SL_BUFFER_PIPS * self.pip_size)
+            entry_p = closes[manip_idx]
+            sl_pips = (sl_price - entry_p) / self.pip_size
+            tp1 = entry_p - ((entry_p - accum_l) * 0.50)
+            if 3.0 <= sl_pips <= 20.0:
+                trades.append(InstitutionalTrade(
+                    trade_id=trade_id_start,
+                    entry_type=EntryType.MANIPULATION,
+                    timeframe=timeframe,
+                    direction="SELL",
+                    entry_time=t_manip,
+                    entry_price=round(entry_p, 5),
+                    stop_loss=round(sl_price, 5),
+                    tp_50_eq=round(tp1, 5),
+                    tp_structural=round(opposite_target, 5),
+                    sl_pips=round(sl_pips, 1),
+                    htf_key_level=htf_level.level_type
+                ))
+                trade_id_start += 1
+
+            # 2. ENTRY_POST_BREAKOUT_RETEST (Conservativa: rottura con displacement sotto accum_l)
+            for k in range(manip_idx + 1, min(manip_idx + 15, len(window))):
+                if closes[k] < accum_l:
+                    entry_retest = accum_l
+                    sl_pips_r = (sl_price - entry_retest) / self.pip_size
+                    tp1_r = entry_retest - ((entry_retest - opposite_target) * 0.50)
+                    if 3.0 <= sl_pips_r <= 22.0:
+                        trades.append(InstitutionalTrade(
+                            trade_id=trade_id_start,
+                            entry_type=EntryType.POST_BREAKOUT_RETEST,
+                            timeframe=timeframe,
+                            direction="SELL",
+                            entry_time=times[k],
+                            entry_price=round(entry_retest, 5),
+                            stop_loss=round(sl_price, 5),
+                            tp_50_eq=round(tp1_r, 5),
+                            tp_structural=round(opposite_target, 5),
+                            sl_pips=round(sl_pips_r, 1),
+                            htf_key_level=htf_level.level_type
+                        ))
+                    break
+
+        elif direction == "BUY":
+            sl_price = manip_price - (CONFIG_EXEC.SL_BUFFER_PIPS * self.pip_size)
+            entry_p = closes[manip_idx]
+            sl_pips = (entry_p - sl_price) / self.pip_size
+            tp1 = entry_p + ((accum_h - entry_p) * 0.50)
+            if 3.0 <= sl_pips <= 20.0:
+                trades.append(InstitutionalTrade(
+                    trade_id=trade_id_start,
+                    entry_type=EntryType.MANIPULATION,
+                    timeframe=timeframe,
+                    direction="BUY",
+                    entry_time=t_manip,
+                    entry_price=round(entry_p, 5),
+                    stop_loss=round(sl_price, 5),
+                    tp_50_eq=round(tp1, 5),
+                    tp_structural=round(opposite_target, 5),
+                    sl_pips=round(sl_pips, 1),
+                    htf_key_level=htf_level.level_type
+                ))
+                trade_id_start += 1
+
+            for k in range(manip_idx + 1, min(manip_idx + 15, len(window))):
+                if closes[k] > accum_h:
+                    entry_retest = accum_h
+                    sl_pips_r = (entry_retest - sl_price) / self.pip_size
+                    tp1_r = entry_retest + ((opposite_target - entry_retest) * 0.50)
+                    if 3.0 <= sl_pips_r <= 22.0:
+                        trades.append(InstitutionalTrade(
+                            trade_id=trade_id_start,
+                            entry_type=EntryType.POST_BREAKOUT_RETEST,
+                            timeframe=timeframe,
+                            direction="BUY",
+                            entry_time=times[k],
+                            entry_price=round(entry_retest, 5),
+                            stop_loss=round(sl_price, 5),
+                            tp_50_eq=round(tp1_r, 5),
+                            tp_structural=round(opposite_target, 5),
+                            sl_pips=round(sl_pips_r, 1),
+                            htf_key_level=htf_level.level_type
+                        ))
+                    break
+
+        return trades
+
+    def _simulate_contextual_trade(self, trade: InstitutionalTrade, df_m1: pd.DataFrame):
+        future = df_m1[df_m1.index > trade.entry_time]
+        if len(future) == 0:
+            return
+
+        current_sl = trade.stop_loss
+        max_adverse = 0.0
+
+        for t_idx, row in future.iterrows():
+            h, l = row['high'], row['low']
+
+            if trade.direction == "SELL":
+                adverse = max(0.0, (h - trade.entry_price) / self.pip_size)
+                max_adverse = max(max_adverse, adverse)
+
+                if h >= current_sl:
+                    trade.exit_time = t_idx
+                    trade.mae_pips = round(max_adverse, 1)
+                    if trade.hit_target_1:
+                        trade.outcome = "ADJUSTED_WIN"
+                        trade.adjusted_win = True
+                        trade.realized_rr = 1.0
+                    else:
+                        trade.outcome = "LOSS"
                         trade.realized_rr = -1.0
-                        hit_sl = True
-                        break
-                    elif l <= trade.take_profit:
-                        trade.exit_time = t_idx
-                        trade.exit_price = trade.take_profit
-                        trade.outcome = 'WIN'
-                        trade.pnl_pips = trade.sl_pips * trade.target_rr
-                        trade.realized_rr = trade.target_rr
-                        hit_tp = True
-                        break
+                    return
 
-            if not hit_sl and not hit_tp:
-                trade.outcome = 'RUNNING'
+                if not trade.hit_target_1 and l <= trade.tp_50_eq:
+                    trade.hit_target_1 = True
+                    current_sl = trade.entry_price + (trade.sl_pips * 0.35 * self.pip_size)
+
+                if l <= trade.tp_structural:
+                    trade.exit_time = t_idx
+                    trade.mae_pips = round(max_adverse, 1)
+                    trade.strict_win = True
+                    trade.adjusted_win = True
+                    trade.outcome = "STRICT_WIN"
+                    structural_dist = (trade.entry_price - trade.tp_structural) / self.pip_size
+                    trade.realized_rr = round(structural_dist / trade.sl_pips, 2)
+                    return
+
+            elif trade.direction == "BUY":
+                adverse = max(0.0, (trade.entry_price - l) / self.pip_size)
+                max_adverse = max(max_adverse, adverse)
+
+                if l <= current_sl:
+                    trade.exit_time = t_idx
+                    trade.mae_pips = round(max_adverse, 1)
+                    if trade.hit_target_1:
+                        trade.outcome = "ADJUSTED_WIN"
+                        trade.adjusted_win = True
+                        trade.realized_rr = 1.0
+                    else:
+                        trade.outcome = "LOSS"
+                        trade.realized_rr = -1.0
+                    return
+
+                if not trade.hit_target_1 and h >= trade.tp_50_eq:
+                    trade.hit_target_1 = True
+                    current_sl = trade.entry_price - (trade.sl_pips * 0.35 * self.pip_size)
+
+                if h >= trade.tp_structural:
+                    trade.exit_time = t_idx
+                    trade.mae_pips = round(max_adverse, 1)
+                    trade.strict_win = True
+                    trade.adjusted_win = True
+                    trade.outcome = "STRICT_WIN"
+                    structural_dist = (trade.tp_structural - trade.entry_price) / self.pip_size
+                    trade.realized_rr = round(structural_dist / trade.sl_pips, 2)
+                    return
+
+        trade.mae_pips = round(max_adverse, 1)

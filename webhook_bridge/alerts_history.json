@@ -365,5 +365,137 @@
         ]
       }
     }
+  },
+  {
+    "received_at": "2026-11-08T15:12:04.572634",
+    "payload": {
+      "alert": {
+        "symbol": "EURUSD",
+        "timeframe": "M1",
+        "entry_type": "BREAKOUT_RETEST",
+        "action": "SELL",
+        "entry_price": 1.1153,
+        "sl_price": 1.1162,
+        "tp_50_eq": 1.113,
+        "tp_structural": 1.111,
+        "htf_key_level": "H4_PREMIUM_IMB",
+        "passphrase": null
+      },
+      "validation": {
+        "accepted": true,
+        "status": "APPROVED_INSTITUTIONAL_ENTRY",
+        "symbol": "EURUSD",
+        "entry_type": "BREAKOUT_RETEST",
+        "action": "SELL",
+        "entry_price": 1.1153,
+        "sl_price": 1.1162,
+        "tp_50_eq": 1.113,
+        "tp_structural": 1.111,
+        "sl_pips": 9.0,
+        "structural_rr": 4.78,
+        "htf_key_level": "H4_PREMIUM_IMB",
+        "rejection_reasons": []
+      }
+    }
+  },
+  {
+    "received_at": "2026-11-08T15:12:04.594402",
+    "payload": {
+      "alert": {
+        "symbol": "EURUSD",
+        "timeframe": "M1",
+        "entry_type": "BREAKOUT_RETEST",
+        "action": "SELL",
+        "entry_price": 1.1153,
+        "sl_price": 1.114,
+        "tp_50_eq": 1.113,
+        "tp_structural": 1.111,
+        "htf_key_level": "H4_PREMIUM_IMB",
+        "passphrase": null
+      },
+      "validation": {
+        "accepted": false,
+        "status": "REJECTED_BY_FRAMEWORK",
+        "symbol": "EURUSD",
+        "entry_type": "BREAKOUT_RETEST",
+        "action": "SELL",
+        "entry_price": 1.1153,
+        "sl_price": 1.114,
+        "tp_50_eq": 1.113,
+        "tp_structural": 1.111,
+        "sl_pips": 13.0,
+        "structural_rr": 3.31,
+        "htf_key_level": "H4_PREMIUM_IMB",
+        "rejection_reasons": [
+          "Violazione: Per SELL lo Stop Loss deve essere rigorosamente sopra l'entry (estremo manipolazione)."
+        ]
+      }
+    }
+  },
+  {
+    "received_at": "2026-11-08T15:14:03.465363",
+    "payload": {
+      "alert": {
+        "symbol": "EURUSD",
+        "timeframe": "M1",
+        "entry_type": "BREAKOUT_RETEST",
+        "action": "SELL",
+        "entry_price": 1.1153,
+        "sl_price": 1.1162,
+        "tp_50_eq": 1.113,
+        "tp_structural": 1.111,
+        "htf_key_level": "H4_PREMIUM_IMB",
+        "passphrase": null
+      },
+      "validation": {
+        "accepted": true,
+        "status": "APPROVED_INSTITUTIONAL_ENTRY",
+        "symbol": "EURUSD",
+        "entry_type": "BREAKOUT_RETEST",
+        "action": "SELL",
+        "entry_price": 1.1153,
+        "sl_price": 1.1162,
+        "tp_50_eq": 1.113,
+        "tp_structural": 1.111,
+        "sl_pips": 9.0,
+        "structural_rr": 4.78,
+        "htf_key_level": "H4_PREMIUM_IMB",
+        "rejection_reasons": []
+      }
+    }
+  },
+  {
+    "received_at": "2026-11-08T15:14:03.482760",
+    "payload": {
+      "alert": {
+        "symbol": "EURUSD",
+        "timeframe": "M1",
+        "entry_type": "BREAKOUT_RETEST",
+        "action": "SELL",
+        "entry_price": 1.1153,
+        "sl_price": 1.114,
+        "tp_50_eq": 1.113,
+        "tp_structural": 1.111,
+        "htf_key_level": "H4_PREMIUM_IMB",
+        "passphrase": null
+      },
+      "validation": {
+        "accepted": false,
+        "status": "REJECTED_BY_FRAMEWORK",
+        "symbol": "EURUSD",
+        "entry_type": "BREAKOUT_RETEST",
+        "action": "SELL",
+        "entry_price": 1.1153,
+        "sl_price": 1.114,
+        "tp_50_eq": 1.113,
+        "tp_structural": 1.111,
+        "sl_pips": 13.0,
+        "structural_rr": 3.31,
+        "htf_key_level": "H4_PREMIUM_IMB",
+        "rejection_reasons": [
+          "Violazione: Per SELL lo Stop Loss deve essere rigorosamente sopra l'entry (estremo manipolazione)."
+        ]
+      }
+    }
   }
 ]
