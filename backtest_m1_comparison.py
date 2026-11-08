@@ -51,14 +51,15 @@ def analyze_real_pair_year(symbol: str, year: int = 2025) -> List[InstitutionalT
     print(f"\n[+] Caricamento 1 ANNO INTERO ({year}) di dati REALI Dukascopy M1 da CasaOS per {symbol}...")
     df_m1 = load_casaos_dukascopy_year(symbol=symbol, year=year)
     df_m5 = resample_candles(df_m1, target_tf="5min")
+    df_m15 = resample_candles(df_m1, target_tf="15min")
     df_h1 = resample_candles(df_m1, target_tf="1h")
     df_h4 = resample_candles(df_m1, target_tf="4h")
 
     print(f"[+] {symbol} ({year}) caricato: {len(df_m1):,} candele M1 ({df_m1.index[0]} -> {df_m1.index[-1]})")
-    print(f"[+] Timeframe aggregati: M5={len(df_m5):,}, H1={len(df_h1):,}, H4={len(df_h4):,}")
+    print(f"[+] Catena Frattale Timeframe: M5={len(df_m5):,}, M15={len(df_m15):,}, H1={len(df_h1):,}, H4={len(df_h4):,}")
 
     engine = InstitutionalAMDEngine(symbol=symbol)
-    trades = engine.analyze_market(df_m1=df_m1, df_m5=df_m5, df_h4=df_h4, df_h1=df_h1)
+    trades = engine.analyze_market(df_m1=df_m1, df_m5=df_m5, df_h4=df_h4, df_h1=df_h1, df_m15=df_m15)
 
     trades_box = [t for t in trades if t.accumulation_type == AccumulationType.AMD_HORIZONTAL_BOX]
     trades_dyn = [t for t in trades if t.accumulation_type == AccumulationType.DYNAMIC_ACCUMULATION_BOS]

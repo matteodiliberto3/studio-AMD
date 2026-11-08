@@ -96,14 +96,15 @@ def run_institutional_backtest(
 
     df_m1 = load_candles_csv(path)
     df_m5 = resample_candles(df_m1, target_tf="5min")
+    df_m15 = resample_candles(df_m1, target_tf="15min")
     df_h1 = resample_candles(df_m1, target_tf="1h")
     df_h4 = resample_candles(df_m1, target_tf="4h")
 
     print(f"[+] Candele M1 Reali: {len(df_m1)} ({df_m1.index[0]} -> {df_m1.index[-1]})")
-    print(f"[+] Timeframe aggregati: M5={len(df_m5)}, H1={len(df_h1)}, H4={len(df_h4)}")
+    print(f"[+] Catena Frattale Timeframe: M5={len(df_m5)}, M15={len(df_m15)}, H1={len(df_h1)}, H4={len(df_h4)}")
 
     engine = InstitutionalAMDEngine(symbol=symbol)
-    trades = engine.analyze_market(df_m1=df_m1, df_m5=df_m5, df_h4=df_h4, df_h1=df_h1)
+    trades = engine.analyze_market(df_m1=df_m1, df_m5=df_m5, df_h4=df_h4, df_h1=df_h1, df_m15=df_m15)
 
     if not trades:
         print("[!] Nessun trade trovato nel periodo selezionato.")

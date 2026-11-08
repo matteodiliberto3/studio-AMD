@@ -40,8 +40,16 @@ class HTFRangeConfig:
     # Regola Fonte 16: se >= 2 chiusure di corpo consecutive chiudono oltre il Key Level, il livello è invalidato
     MAX_CONSECUTIVE_CLOSES_BEYOND_KL: int = 2
 
-    # Filtro 50% Equilibrium del range MTF
+    # Livelli Fibonacci del Range MTF (0.0 = m, 0.50 = Equilibrium, 1.0 = M)
+    FIB_MIN_DISCOUNT: float = 0.0
+    FIB_EQUILIBRIUM: float = 0.50
+    FIB_MAX_PREMIUM: float = 1.0
     EQUILIBRIUM_THRESHOLD: float = 0.50
+
+    # Catena Frattale dei Target MTF:
+    # Il Take Profit punta al PRIMO Key Level MTF opposto non mitigato (IMB MTF, Rejection Block MTF o M/m MTF)
+    MIN_MTF_TARGET_RR: float = 2.0
+    OPTIMAL_MAX_MTF_TARGET_RR: float = 5.5
 
 
 @dataclass(frozen=True)

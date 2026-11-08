@@ -1,12 +1,11 @@
 """
-Modulo Strategia Operativa Istituzionale:
-Implementa il meccanismo unificato di Entry per entrambe le morfologie di accumulazione:
-1. AMD_HORIZONTAL_BOX:
-   Box orizzontale (M/m) vicino al KL MTF -> Manipolazione fino al KL -> Rottura di m/M con IMB ->
-   Almeno 2 chiusure oltre m/M -> Rientro (Retest) nell'IMB -> TP su Target MTF.
-2. DYNAMIC_ACCUMULATION_BOS:
-   Accumulazione dinamica a swing (M/m) sul KL MTF -> Rottura di m/M con IMB ->
-   Almeno 2 chiusure oltre m/M -> Rientro (Retest) nell'IMB -> TP su Target MTF.
+Modulo Strategia Operativa Istituzionale — Catena Frattale dei Timeframe, Fibonacci (M/m) e Target MTF:
+Implementa l'intero flusso frattale multi-timeframe:
+[Individuazione Range M/m + Fibonacci (0, 0.5, 1)] ->
+[Verifica Premium (>0.50 Solo Short) / Discount (<0.50 Solo Long)] ->
+[Rottura Accumulazione Orizzontale o Dinamica (M o m) con IMB + >=2 Chiusure] ->
+[Entry su Retest Millimetrico dell'IMB LTF (M5 / M1)] ->
+[TP sul Primo Key Level MTF (M15 / H1 / H4)]
 """
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,17 +16,22 @@ import pandas as pd
 from config import (
     CONFIG_ASSET,
     CONFIG_EXEC,
+    CONFIG_HTF,
     AccumulationType
 )
+from core.data_loader import resample_candles
 from core.indicators import (
-    BreakoutImbalance,
     HTFKeyLevel,
+    MTFFractalTarget,
+    build_mtf_fractal_targets,
     detect_breakout_with_imb_and_two_closes,
     detect_dynamic_swing_level,
     detect_horizontal_accumulation_box,
     find_validated_mtf_key_levels,
     is_active_operating_window,
-    is_key_level_invalidated_by_closes
+    is_key_level_invalidated_by_closes,
+    map_fibonacci_range,
+    select_first_mtf_key_level_target
 )
 
 
@@ -37,23 +41,29 @@ class InstitutionalTrade:
     symbol: str
     accumulation_type: AccumulationType
     timeframe: str                  # 'M5' o 'M1'
-    direction: str                  # 'BUY' o 'SELL'
+    direction: str                  # 'BUY' (da Discount <0.50) o 'SELL' (da Premium >0.50)
     manip_time: pd.Timestamp        # Data/Ora del picco di manipolazione sul Key Level MTF
     confirm_time: pd.Timestamp      # Data/Ora della 2a chiusura di conferma oltre M/m
-    entry_time: pd.Timestamp        # Data/Ora del rientro (retest) effettivo nell'IMB
-    htf_key_level_type: str         # Tipo e TF del Key Level MTF (es. H1_MTF_IMBALANCE)
+    entry_time: pd.Timestamp        # Data/Ora del rientro (retest) effettivo nell'IMB LTF
+    range_high_M: float             # Estremo superiore M del Range MTF (Fib 1.0)
+    range_low_m: float              # Estremo inferiore m del Range MTF (Fib 0.0)
+    fib_05_equilibrium: float       # Livello 0.50 Equilibrium del Range MTF
+    fib_entry_level: float          # Coordinata Fibonacci (0.0 - 1.0) del prezzo di ingresso
+    fib_zone: str                   # 'DISCOUNT' (<0.50) o 'PREMIUM' (>0.50)
+    htf_key_level_type: str         # Tipo e TF del POI MTF di partenza (es. H1_MTF_IMBALANCE)
     htf_key_level_price: float      # Prezzo di riferimento del Key Level MTF
-    level_M_or_m: float             # Prezzo del livello M o m rotto con IMB
-    imb_top: float                  # Limite superiore dell'IMB di rottura
-    imb_bottom: float               # Limite inferiore dell'IMB di rottura
-    entry_price: float              # Prezzo di esecuzione sul rientro nell'IMB
+    level_M_or_m: float             # Prezzo del livello LTF M o m rotto con IMB
+    imb_top: float                  # Limite superiore dell'IMB LTF di rottura
+    imb_bottom: float               # Limite inferiore dell'IMB LTF di rottura
+    entry_price: float              # Prezzo di esecuzione sul rientro nell'IMB LTF
     stop_loss: float                # Stop Loss oltre il picco di manipolazione
-    tp_50_eq: float                 # Target intermedio (50% del range verso Target MTF)
-    tp_structural: float            # Target Finale MTF (che può generare inversione)
+    tp_50_eq: float                 # Target intermedio (50% del movimento verso il Primo Key Level MTF)
+    first_mtf_target_type: str      # Identificativo del PRIMO Key Level MTF usato come TP (es. M15_FIRST_MTF_IMB)
+    tp_structural: float            # Prezzo del PRIMO Key Level MTF (Target Finale ottimizzato)
     sl_pips: float
-    mae_pips: float = 0.0           # Maximum Adverse Excursion in pips dopo il retest
+    mae_pips: float = 0.0           # Maximum Adverse Excursion in pips dopo il retest dell'IMB
     hit_target_1: bool = False
-    strict_win: bool = False        # Ha raggiunto il Target MTF Finale
+    strict_win: bool = False        # Ha raggiunto il Primo Key Level MTF Finale
     adjusted_win: bool = False      # Ha raggiunto almeno il 50% + trailing su swing
     outcome: str = "RUNNING"        # 'WIN', 'PARTIAL', 'LOSS', 'RUNNING'
     exit_time: Optional[pd.Timestamp] = None
@@ -70,36 +80,58 @@ class InstitutionalAMDEngine:
         df_m1: pd.DataFrame,
         df_m5: pd.DataFrame,
         df_h4: pd.DataFrame,
-        df_h1: Optional[pd.DataFrame] = None
+        df_h1: Optional[pd.DataFrame] = None,
+        df_m15: Optional[pd.DataFrame] = None
     ) -> List[InstitutionalTrade]:
         """
-        Analizza il mercato cercando sui Key Levels MTF validati (H4 e H1)
-        la sequenza completa su M5 (default) o su M1 (raggi X quando M5 è compresso).
+        Analizza il mercato applicando la Catena Frattale dei Timeframe:
+        1. Mappatura Range MTF ($M$ ed $m$) e Fibonacci (0, 0.5 Equilibrium, 1) su H4 e H1
+        2. Verifica Premium (>0.50 -> Solo Short) e Discount (<0.50 -> Solo Long)
+        3. Catalogazione dei Target MTF (M15, H1, H4) per individuare il PRIMO Key Level MTF d'uscita
+        4. Trigger LTF su M5 (a corpo) o M1 (raggi X) con rottura di M/m + IMB + >=2 chiusure + Retest IMB
         """
         trades: List[InstitutionalTrade] = []
         trade_id = 1
 
-        # 1. Costruzione dei Key Levels MTF validati (H4 + H1), ordinati cronologicamente
+        if df_h1 is None:
+            df_h1 = resample_candles(df_m1, target_tf="1h")
+        if df_m15 is None:
+            df_m15 = resample_candles(df_m1, target_tf="15min")
+
+        # 1. Costruzione dei Range MTF ($M$/$m$ + Fibonacci) e Key Levels MTF validati (H4 + H1)
         mtf_levels: List[HTFKeyLevel] = []
         mtf_levels.extend(find_validated_mtf_key_levels(df_h4, tf_label="H4", lookback_range=15, pip_size=self.pip_size))
-        if df_h1 is not None and len(df_h1) >= 6:
+        if len(df_h1) >= 6:
             mtf_levels.extend(find_validated_mtf_key_levels(df_h1, tf_label="H1", lookback_range=24, pip_size=self.pip_size))
         mtf_levels.sort(key=lambda x: x.timestamp)
+
+        # 2. Costruzione della Catena Frattale dei Target MTF (M15 + H1 + H4)
+        mtf_targets: List[MTFFractalTarget] = []
+        if len(df_m15) >= 6:
+            mtf_targets.extend(build_mtf_fractal_targets(df_m15, tf_label="M15", pip_size=self.pip_size))
+        if len(df_h1) >= 6:
+            mtf_targets.extend(build_mtf_fractal_targets(df_h1, tf_label="H1", pip_size=self.pip_size))
+        if len(df_h4) >= 6:
+            mtf_targets.extend(build_mtf_fractal_targets(df_h4, tf_label="H4", pip_size=self.pip_size))
+        mtf_targets.sort(key=lambda x: x.timestamp)
 
         m5_times = df_m5.index
         m5_highs = df_m5['high'].values
         m5_lows = df_m5['low'].values
 
-        last_entry_End_time = m5_times[0] - pd.Timedelta(days=1)
+        last_entry_end_time = m5_times[0] - pd.Timedelta(days=1)
         kl_left_idx = 0
         n_kls = len(mtf_levels)
+        tgt_left_idx = 0
+        n_tgts = len(mtf_targets)
         max_kl_age = pd.Timedelta(days=4)
+        max_tgt_age = pd.Timedelta(days=3)
 
         i = 15
         while i < len(df_m5) - 20:
             t_curr = m5_times[i]
 
-            if t_curr <= last_entry_End_time:
+            if t_curr <= last_entry_end_time:
                 i += 1
                 continue
 
@@ -108,12 +140,11 @@ class InstitutionalAMDEngine:
                 i += 1
                 continue
 
-            # Avanza il puntatore sinistro per scartare i Key Levels più vecchi di 4 giorni
+            # Avanza il puntatore sinistro dei Key Levels MTF
             min_kl_time = t_curr - max_kl_age
             while kl_left_idx < n_kls and mtf_levels[kl_left_idx].timestamp < min_kl_time:
                 kl_left_idx += 1
 
-            # Filtra i Key Levels MTF attivi nella finestra [t_curr - 4 giorni, t_curr)
             active_kls: List[HTFKeyLevel] = []
             k_ptr = kl_left_idx
             while k_ptr < n_kls and mtf_levels[k_ptr].timestamp < t_curr:
@@ -129,7 +160,7 @@ class InstitutionalAMDEngine:
             c_high = float(m5_highs[i])
             c_low = float(m5_lows[i])
 
-            # Cerca se la candela M5 corrente sta toccando/manipolando un Key Level MTF
+            # Cerca se la candela M5 corrente tocca un Key Level MTF (in Premium per Short, in Discount per Long)
             touched_kl: Optional[HTFKeyLevel] = None
             for kl in reversed(active_kls):
                 if kl.direction == "BEARISH":
@@ -145,10 +176,7 @@ class InstitutionalAMDEngine:
                 i += 1
                 continue
 
-            # Regola Fonte 16 & Validità del Range MTF:
-            # Verifica sull'intero storico dalla nascita del KL fino ad ora se:
-            # 1) Ci sono state >= 2 chiusure consecutive oltre il Key Level MTF
-            # 2) L'origine del Range MTF è stata violata (rottura struttura contraria)
+            # Verifica integrità del Range MTF ($M$/$m$) e Regola Fonte 16 (< 2 chiusure oltre il Key Level)
             check_slice = df_m5.loc[touched_kl.timestamp:m5_times[min(len(df_m5) - 1, i + 1)]]
             range_broken = False
             if len(check_slice) > 2:
@@ -162,13 +190,26 @@ class InstitutionalAMDEngine:
                 i += 1
                 continue
 
-            # Scelta Dinamica M5 vs M1 ("Raggi X"):
-            # 1) Proviamo prima a validare la sequenza completa a corpo su M5
+            # Raccoglie i Key Levels MTF candidati come PRIMO TARGET MTF nella finestra attiva
+            min_tgt_time = t_curr - max_tgt_age
+            while tgt_left_idx < n_tgts and mtf_targets[tgt_left_idx].timestamp < min_tgt_time:
+                tgt_left_idx += 1
+
+            active_mtf_targets: List[MTFFractalTarget] = []
+            t_ptr = tgt_left_idx
+            while t_ptr < n_tgts and mtf_targets[t_ptr].timestamp <= t_curr:
+                active_mtf_targets.append(mtf_targets[t_ptr])
+                t_ptr += 1
+
+            # 1) Tentativo di validazione sequenza a corpo su M5
+            df_m15_slice = df_m15.loc[t_curr - pd.Timedelta(hours=36):t_curr]
             trade_m5 = self._try_build_entry_on_timeframe(
                 df_ltf=df_m5,
                 timeframe="M5",
                 center_time=t_curr,
                 kl=touched_kl,
+                active_mtf_targets=active_mtf_targets,
+                df_m15_slice=df_m15_slice,
                 trade_id=trade_id
             )
 
@@ -177,17 +218,18 @@ class InstitutionalAMDEngine:
                 trades.append(trade_m5)
                 touched_kl.invalidated = True
                 trade_id += 1
-                last_entry_End_time = trade_m5.entry_time + pd.Timedelta(minutes=30)
+                last_entry_end_time = trade_m5.entry_time + pd.Timedelta(minutes=30)
                 i += 6
                 continue
 
-            # 2) Se su M5 il movimento è compresso in un'ombra/wick e non mostra la struttura a corpo,
-            #    scendiamo a "Raggi X" su M1 per cercare la stessa sequenza chirurgica
+            # 2) Se su M5 il tocco è compresso in una wick, scende a "Raggi X" su M1
             trade_m1 = self._try_build_entry_on_timeframe(
                 df_ltf=df_m1,
                 timeframe="M1",
                 center_time=t_curr,
                 kl=touched_kl,
+                active_mtf_targets=active_mtf_targets,
+                df_m15_slice=df_m15_slice,
                 trade_id=trade_id
             )
 
@@ -196,7 +238,7 @@ class InstitutionalAMDEngine:
                 trades.append(trade_m1)
                 touched_kl.invalidated = True
                 trade_id += 1
-                last_entry_End_time = trade_m1.entry_time + pd.Timedelta(minutes=25)
+                last_entry_end_time = trade_m1.entry_time + pd.Timedelta(minutes=25)
                 i += 5
                 continue
 
@@ -210,15 +252,15 @@ class InstitutionalAMDEngine:
         timeframe: str,
         center_time: pd.Timestamp,
         kl: HTFKeyLevel,
+        active_mtf_targets: List[MTFFractalTarget],
+        df_m15_slice: Optional[pd.DataFrame],
         trade_id: int
     ) -> Optional[InstitutionalTrade]:
         """
-        Cerca sul timeframe specificato (M5 o M1) la sequenza completa:
-        1. Accumulazione (Orizzontale con Box M/m oppure Dinamica con Swing M/m)
-        2. Manipolazione fino al Key Level MTF (senza >= 2 chiusure oltre il KL)
-        3. Rottura di M/m con IMB
-        4. Almeno 2 chiusure di candela oltre M/m
-        5. Rientro (Retest) effettivo dentro quell'IMB
+        Replica la catena frattale completa:
+        [Range M/m + Fibonacci] -> [Verifica Premium/Discount] ->
+        [Rottura Accumulazione / M o m con IMB + >=2 Chiusure] ->
+        [Entry su Retest IMB LTF] -> [TP sul Primo Key Level MTF].
         """
         pre_delta = pd.Timedelta(minutes=25 if timeframe == "M1" else 90)
         post_delta = pd.Timedelta(minutes=60 if timeframe == "M1" else 180)
@@ -226,37 +268,37 @@ class InstitutionalAMDEngine:
         if len(window) < 14:
             return None
 
-        # Verifica su LTF che non ci siano >= 2 chiusure consecutive oltre l'estremo del KL
         if is_key_level_invalidated_by_closes(window.iloc[:len(window) // 2], kl):
             return None
 
         highs = window['high'].values
         lows = window['low'].values
-        closes = window['close'].values
         times = window.index
 
         direction = "SELL" if kl.direction == "BEARISH" else "BUY"
 
-        # Individua l'indice del picco di manipolazione sul Key Level intorno a center_time
-        center_Zone_end = min(len(window) - 6, int(len(window) * 0.55))
-        center_Zone_start = max(4, int(len(window) * 0.15))
-        if center_Zone_end <= center_Zone_start:
+        center_zone_end = min(len(window) - 6, int(len(window) * 0.55))
+        center_zone_start = max(4, int(len(window) * 0.15))
+        if center_zone_end <= center_zone_start:
             return None
 
         if direction == "SELL":
-            manip_idx = center_Zone_start + int(np.argmax(highs[center_Zone_start:center_Zone_end]))
+            manip_idx = center_zone_start + int(np.argmax(highs[center_zone_start:center_zone_end]))
             manip_extreme = float(highs[manip_idx])
             if manip_extreme < kl.bottom - (1.5 * self.pip_size):
                 return None
         else:
-            manip_idx = center_Zone_start + int(np.argmin(lows[center_Zone_start:center_Zone_end]))
+            manip_idx = center_zone_start + int(np.argmin(lows[center_zone_start:center_zone_end]))
             manip_extreme = float(lows[manip_idx])
             if manip_extreme > kl.top + (1.5 * self.pip_size):
                 return None
 
         manip_time = times[manip_idx]
 
-        # PASSO 1: Verifica se c'è un'Accumulazione Orizzontale Classica (Box M/m)
+        # Mappatura Fibonacci del Range MTF attivo ($M$ ed $m$)
+        fib_map = map_fibonacci_range(kl.range_high, kl.range_low, timeframe=kl.timeframe, pip_size=self.pip_size)
+
+        # PASSO 1: Accumulazione Orizzontale Classica (Box M/m)
         horiz_box = detect_horizontal_accumulation_box(
             window, manip_idx=manip_idx, timeframe=timeframe, pip_size=self.pip_size
         )
@@ -265,7 +307,6 @@ class InstitutionalAMDEngine:
         level_M_or_m: Optional[float] = None
 
         if horiz_box is not None:
-            # Per essere una vera A-M-D sulla box, la manipolazione deve essere uscita dalla box
             if direction == "SELL" and manip_extreme > horiz_box.high_M:
                 accum_type = AccumulationType.AMD_HORIZONTAL_BOX
                 level_M_or_m = horiz_box.low_m
@@ -273,7 +314,7 @@ class InstitutionalAMDEngine:
                 accum_type = AccumulationType.AMD_HORIZONTAL_BOX
                 level_M_or_m = horiz_box.high_M
 
-        # PASSO 2: Se non è una box orizzontale piatta, verifica l'Accumulazione Dinamica (Swing M/m)
+        # PASSO 2: Accumulazione Dinamica (Swing M/m)
         if accum_type is None:
             dyn_swing = detect_dynamic_swing_level(
                 window, manip_idx=manip_idx, direction=direction, lookback=10, pip_size=self.pip_size
@@ -298,8 +339,7 @@ class InstitutionalAMDEngine:
 
         imb, confirm_idx, confirm_time = breakout_res
 
-        # PASSO 4: Attesa del RIENTRO (RETEST) dentro quell'IMB dopo le 2 chiusure di conferma
-        # Il prezzo di Limit è il bordo prossimale dell'IMB (o il suo midpoint se molto stretto)
+        # PASSO 4: Prezzo di ingresso sul rientro (retest) dell'IMB LTF e Verifica Filtro Fibonacci Obbligatorio
         if direction == "SELL":
             limit_entry_price = imb.bottom if imb.gap_pips >= 1.2 else imb.midpoint
             sl_price = manip_extreme + (CONFIG_EXEC.SL_BUFFER_PIPS * self.pip_size)
@@ -313,18 +353,33 @@ class InstitutionalAMDEngine:
         if not (2.5 <= sl_pips <= max_sl_allowed):
             return None
 
-        # Target MTF (struttura opposta che può generare un'inversione) e Target 50% intermedio
-        tp_structural = kl.target_mtf
+        # Filtro Obbligatorio Fibonacci su Range M/m:
+        # - Se Long (BUY), la manipolazione sul POI deve avvenire in zona DISCOUNT (< 0.50 Equilibrium)
+        # - Se Short (SELL), la manipolazione sul POI deve avvenire in zona PREMIUM (> 0.50 Equilibrium)
+        fib_manip_pos = fib_map.fib_level_of_price(manip_extreme)
+        if direction == "BUY" and fib_manip_pos > CONFIG_HTF.FIB_EQUILIBRIUM:
+            return None
+        if direction == "SELL" and fib_manip_pos < CONFIG_HTF.FIB_EQUILIBRIUM:
+            return None
+        fib_zone_label = "DISCOUNT" if direction == "BUY" else "PREMIUM"
+
+        # PASSO 5: Selezione del PRIMO Key Level MTF NON MITIGATO come Take Profit Ottimizzato
+        tp_structural, first_mtf_target_type = select_first_mtf_key_level_target(
+            entry_price=limit_entry_price,
+            sl_pips=sl_pips,
+            direction=direction,
+            kl=kl,
+            active_mtf_targets=active_mtf_targets,
+            df_m15_slice=df_m15_slice,
+            pip_size=self.pip_size
+        )
+
         if direction == "SELL":
-            if tp_structural >= limit_entry_price - (sl_pips * 1.5 * self.pip_size):
-                tp_structural = round(limit_entry_price - (sl_pips * 3.0 * self.pip_size), 5)
             tp_50 = round(limit_entry_price - ((limit_entry_price - tp_structural) * 0.50), 5)
         else:
-            if tp_structural <= limit_entry_price + (sl_pips * 1.5 * self.pip_size):
-                tp_structural = round(limit_entry_price + (sl_pips * 3.0 * self.pip_size), 5)
             tp_50 = round(limit_entry_price + ((tp_structural - limit_entry_price) * 0.50), 5)
 
-        # Cerca la candela successiva a `confirm_idx` che RIENTRA nell'IMB per eseguire il Limit
+        # PASSO 6: Attesa del rientro (retest) millimetrico nell'IMB LTF dopo le 2 chiusure
         retest_end = min(len(window), confirm_idx + 1 + CONFIG_EXEC.MAX_BARS_WAIT_FOR_IMB_RETEST)
         entry_time: Optional[pd.Timestamp] = None
 
@@ -333,18 +388,14 @@ class InstitutionalAMDEngine:
             r_low = float(lows[r_idx])
 
             if direction == "SELL":
-                # Se il prezzo è già andato a TP1 prima di ritestare l'IMB, l'ordine viene cancellato
                 if r_low <= tp_50:
                     return None
-                # Il prezzo risale e rientra nell'IMB!
                 if r_high >= limit_entry_price:
-                    # Verifica che non abbia bucato direttamente lo SL nella stessa candela prima del fill
                     entry_time = times[r_idx]
                     break
             else:
                 if r_high >= tp_50:
                     return None
-                # Il prezzo scende e rientra nell'IMB!
                 if r_low <= limit_entry_price:
                     entry_time = times[r_idx]
                     break
@@ -361,6 +412,11 @@ class InstitutionalAMDEngine:
             manip_time=manip_time,
             confirm_time=confirm_time,
             entry_time=entry_time,
+            range_high_M=fib_map.high_M,
+            range_low_m=fib_map.low_m,
+            fib_05_equilibrium=fib_map.fib_05_equilibrium,
+            fib_entry_level=fib_manip_pos,
+            fib_zone=fib_zone_label,
             htf_key_level_type=f"{kl.timeframe}_{kl.level_type}",
             htf_key_level_price=kl.midpoint,
             level_M_or_m=round(level_M_or_m, 5),
@@ -369,19 +425,20 @@ class InstitutionalAMDEngine:
             entry_price=round(limit_entry_price, 5),
             stop_loss=round(sl_price, 5),
             tp_50_eq=round(tp_50, 5),
+            first_mtf_target_type=first_mtf_target_type,
             tp_structural=round(tp_structural, 5),
             sl_pips=round(sl_pips, 1)
         )
 
     def _simulate_contextual_trade(self, trade: InstitutionalTrade, df_m1: pd.DataFrame):
         """
-        Simula la vita del trade dopo il rientro nell'IMB:
+        Simula la vita del trade dopo il rientro nell'IMB LTF fino al Primo Key Level MTF:
         - Calcola il MAE (drawdown massimo dal prezzo di entry sull'IMB)
         - Al raggiungimento del 50% (tp_50_eq), incassa il parziale e sposta lo SL dietro lo swing
-        - Chiude il resto al raggiungimento del Target MTF opposto (tp_structural)
+        - Chiude sull'obiettivo magnetico del PRIMO Key Level MTF (tp_structural)
         """
         future = df_m1.loc[
-            trade.entry_time + pd.Timedelta(minutes=1) : trade.entry_time + pd.Timedelta(days=5)
+            trade.entry_time + pd.Timedelta(minutes=1):trade.entry_time + pd.Timedelta(days=5)
         ]
         if len(future) == 0:
             return
@@ -416,7 +473,6 @@ class InstitutionalAMDEngine:
 
                 if not trade.hit_target_1 and l <= trade.tp_50_eq:
                     trade.hit_target_1 = True
-                    # Sposta SL dietro il nuovo swing strutturale (MAI a breakeven sull'entrata)
                     current_sl = round(trade.entry_price + (trade.sl_pips * 0.25 * self.pip_size), 5)
 
                 if l <= trade.tp_structural:
@@ -468,8 +524,9 @@ def export_trades_to_csv(
     output_path: Union[str, Path] = "data/trades_executed_log.csv"
 ) -> pd.DataFrame:
     """
-    Esporta l'elenco dettagliato dei trade eseguiti in CSV con tutti gli orari
-    e i livelli esatti per la verifica visiva su TradingView.
+    Esporta l'elenco dettagliato dei trade eseguiti con l'intera Catena Frattale:
+    [Range M/m + Fibonacci] -> [Zona Premium/Discount] -> [Rottura M/m + IMB] ->
+    [Entry su IMB LTF] -> [TP sul Primo Key Level MTF].
     """
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -485,6 +542,11 @@ def export_trades_to_csv(
             "Timeframe_Usato": t.timeframe,
             "Tipo_Entry": t.accumulation_type.value,
             "Direzione": t.direction,
+            "Range_MTF_M": t.range_high_M,
+            "Range_MTF_m": t.range_low_m,
+            "Fib_05_Equilibrium": t.fib_05_equilibrium,
+            "Fib_Entry_Pos": t.fib_entry_level,
+            "Fib_Zona": t.fib_zone,
             "HTF_Key_Level_Type": t.htf_key_level_type,
             "HTF_Key_Level_Price": t.htf_key_level_price,
             "Livello_M_o_m_Rotto": t.level_M_or_m,
@@ -493,6 +555,7 @@ def export_trades_to_csv(
             "Entry_Price": t.entry_price,
             "SL_Price": t.stop_loss,
             "TP_50_Price": t.tp_50_eq,
+            "Primo_Key_Level_MTF_Target": t.first_mtf_target_type,
             "TP_Struct_Price": t.tp_structural,
             "SL_Pips": t.sl_pips,
             "MAE_Pips": t.mae_pips,

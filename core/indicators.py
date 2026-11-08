@@ -1,10 +1,11 @@
 """
-Modulo Indicatori Istituzionali:
-1. Validazione Key Level MTF/HTF (Presa di liquidità + Rottura strutturale + IMB / Rejection Block)
-2. Regola di Tenuta vs Accettazione sul Key Level (Fonte 16: >= 2 chiusure oltre il KL invalidano il setup)
-3. Rilevamento Accumulazione Orizzontale Classica (Box M/m per A-M-D)
-4. Rilevamento Accumulazione Dinamica (Swing strutturale M/m)
+Modulo Indicatori Istituzionali — Catena Frattale dei Timeframe, Fibonacci (M/m) e Target MTF:
+1. Mappatura del Range MTF/HTF sugli estremi assoluti (M ed m) e Ritracciamento di Fibonacci (0.0, 0.50 Equilibrium, 1.0)
+2. Filtro Obbligatorio di Posizione: Discount (< 0.50 -> SOLO Long) e Premium (> 0.50 -> SOLO Short)
+3. Regola di Tenuta vs Accettazione sul Key Level (Fonte 16: >= 2 chiusure oltre il KL invalidano il setup)
+4. Rilevamento Accumulazione Orizzontale Classica (Box M/m per A-M-D) e Accumulazione Dinamica (Swing M/m)
 5. Rilevamento Rottura di M/m con Imbalance (IMB) e conteggio delle >= 2 chiusure di conferma oltre M/m
+6. Catena Frattale dei Target MTF: individuazione del PRIMO Key Level MTF opposto (IMB MTF, Rejection Block MTF o Swing M/m MTF)
 """
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
@@ -15,27 +16,75 @@ from config import CONFIG_ASSET, CONFIG_EXEC, CONFIG_HTF, CONFIG_SESSION
 
 
 @dataclass
+class FibonacciRangeMapping:
+    """
+    Rappresenta il tracciamento virtuale di Fibonacci (0.0, 0.50 Equilibrium, 1.0)
+    sugli estremi assoluti del range MTF attivo: massimo (M) e minimo (m).
+    """
+    timeframe: str
+    high_M: float               # Livello 1.0 del Fibonacci (Massimo assoluto M del range)
+    low_m: float                # Livello 0.0 del Fibonacci (Minimo assoluto m del range)
+    fib_05_equilibrium: float   # Livello 0.50 Equilibrium ((M + m) / 2)
+    range_pips: float
+
+    def fib_level_of_price(self, price: float) -> float:
+        """Restituisce la coordinata di Fibonacci (0.0 = m, 0.50 = Equilibrium, 1.0 = M)."""
+        span = self.high_M - self.low_m
+        if span <= 1e-9:
+            return 0.50
+        return round((price - self.low_m) / span, 3)
+
+    def get_zone(self, price: float) -> str:
+        """
+        Determina se il prezzo si trova in:
+        - 'DISCOUNT' (< 0.50 -> cercare ESCLUSIVAMENTE setup Long)
+        - 'PREMIUM'  (> 0.50 -> cercare ESCLUSIVAMENTE setup Short)
+        """
+        fib = self.fib_level_of_price(price)
+        if fib < CONFIG_HTF.FIB_EQUILIBRIUM:
+            return "DISCOUNT"
+        return "PREMIUM"
+
+
+@dataclass
 class HTFKeyLevel:
-    level_type: str         # 'MTF_IMBALANCE' o 'MTF_REJECTION_BLOCK'
-    timeframe: str          # 'H4' o 'H1'
+    level_type: str             # 'MTF_IMBALANCE' o 'MTF_REJECTION_BLOCK'
+    timeframe: str              # 'H4' o 'H1'
     timestamp: pd.Timestamp
     top: float
     bottom: float
     midpoint: float
-    direction: str          # 'BEARISH' (in Premium) o 'BULLISH' (in Discount)
-    range_high: float       # Massimo del range MTF validato
-    range_low: float        # Minimo del range MTF validato
-    equilibrium_50: float   # 50% del range MTF
-    target_mtf: float       # Target MTF opposto che potrebbe generare un'inversione
+    direction: str              # 'BEARISH' (in Premium > 0.50) o 'BULLISH' (in Discount < 0.50)
+    range_high: float           # Massimo M del range MTF validato (Fib 1.0)
+    range_low: float            # Minimo m del range MTF validato (Fib 0.0)
+    equilibrium_50: float       # 50% Equilibrium del range MTF (Fib 0.50)
+    fib_position: float         # Coordinata Fibonacci del Key Level dentro il range M/m (es. 0.24 in Discount o 0.78 in Premium)
+    target_mtf: float           # Target MTF di default (estremo M o m opposto del range)
     invalidated: bool = False
+
+
+@dataclass
+class MTFFractalTarget:
+    """
+    Rappresenta un Key Level nei Medium Timeframe (M15 / H1 / H4) che funge da
+    bersaglio magnetico ("Dove devono arrivare") per l'uscita ottimizzata del trade.
+    """
+    timeframe: str              # 'M15', 'H1', 'H4'
+    target_type: str            # 'FIRST_MTF_IMB', 'FIRST_MTF_REJECTION_BLOCK', 'FIRST_MTF_SWING_M_m'
+    timestamp: pd.Timestamp
+    direction_for_exit: str     # 'BUY_TARGET' (resistenza/IMB sopra il prezzo) o 'SELL_TARGET' (supporto/IMB sotto il prezzo)
+    price_level: float          # Prezzo esatto di uscita (bordo prossimale del primo Key Level MTF)
+    zone_top: float
+    zone_bottom: float
+    mitigated: bool = False
 
 
 @dataclass
 class HorizontalBox:
     start_time: pd.Timestamp
     end_time: pd.Timestamp
-    high_M: float           # Tetto M della box di accumulazione
-    low_m: float            # Pavimento m della box di accumulazione
+    high_M: float               # Tetto M della box di accumulazione
+    low_m: float                # Pavimento m della box di accumulazione
     range_pips: float
     timeframe: str
 
@@ -44,15 +93,15 @@ class HorizontalBox:
 class DynamicSwingLevel:
     timestamp: pd.Timestamp
     index: int
-    level_price: float      # Prezzo di M (per Long) o m (per Short)
-    swing_type: str         # 'M_HIGH' (per Long) o 'm_LOW' (per Short)
+    level_price: float          # Prezzo di M (per Long) o m (per Short)
+    swing_type: str             # 'M_HIGH' (per Long) o 'm_LOW' (per Short)
 
 
 @dataclass
 class BreakoutImbalance:
     formed_at: pd.Timestamp
     formed_idx: int
-    direction: str          # 'BULLISH' o 'BEARISH'
+    direction: str              # 'BULLISH' o 'BEARISH'
     top: float
     bottom: float
     midpoint: float
@@ -78,18 +127,41 @@ def is_active_operating_window(dt: pd.Timestamp) -> Tuple[bool, str]:
     return True, "IN_SESSION"
 
 
+def map_fibonacci_range(
+    high_M: float,
+    low_m: float,
+    timeframe: str = "H1",
+    pip_size: float = CONFIG_ASSET.PIP_SIZE_DEFAULT
+) -> FibonacciRangeMapping:
+    """
+    Costruisce la mappatura di Fibonacci (0.0 = m, 0.50 = Equilibrium, 1.0 = M)
+    sugli estremi assoluti del range individuato.
+    """
+    eq_50 = (high_M + low_m) / 2.0
+    r_pips = (high_M - low_m) / pip_size
+    return FibonacciRangeMapping(
+        timeframe=timeframe,
+        high_M=round(high_M, 5),
+        low_m=round(low_m, 5),
+        fib_05_equilibrium=round(eq_50, 5),
+        range_pips=round(r_pips, 1)
+    )
+
+
 def calculate_htf_range_and_equilibrium(df_htf: pd.DataFrame, lookback: int = 24) -> pd.DataFrame:
     """
-    Calcola il Dealing Range MTF/HTF e il livello 50% Equilibrium:
-    - Short ammessi SOLO sopra il 50% (Premium)
-    - Long ammessi SOLO sotto il 50% (Discount)
+    Calcola il Dealing Range MTF/HTF (estremi assoluti M ed m) e il livello 0.50 Fibonacci Equilibrium:
+    - Zona Premium (> 0.50 Fib): ammessi ESCLUSIVAMENTE setup Short
+    - Zona Discount (< 0.50 Fib): ammessi ESCLUSIVAMENTE setup Long
     """
     res = df_htf.copy()
     res['htf_high'] = res['high'].rolling(lookback, min_periods=3).max()
     res['htf_low'] = res['low'].rolling(lookback, min_periods=3).min()
     res['equilibrium'] = (res['htf_high'] + res['htf_low']) / 2.0
-    res['is_premium'] = res['close'] > res['equilibrium']
-    res['is_discount'] = res['close'] < res['equilibrium']
+    span = (res['htf_high'] - res['htf_low']).replace(0, np.nan)
+    res['fib_level'] = ((res['close'] - res['htf_low']) / span).fillna(0.50)
+    res['is_premium'] = res['fib_level'] > CONFIG_HTF.FIB_EQUILIBRIUM
+    res['is_discount'] = res['fib_level'] < CONFIG_HTF.FIB_EQUILIBRIUM
     return res
 
 
@@ -100,12 +172,13 @@ def find_validated_mtf_key_levels(
     pip_size: float = CONFIG_ASSET.PIP_SIZE_DEFAULT
 ) -> List[HTFKeyLevel]:
     """
-    Identifica i Range MTF e i relativi Key Levels MTF validati secondo le 3 regole del notebook:
+    Identifica i Range MTF ($M$ ed $m$), traccia il Fibonacci (0, 0.5, 1) e valida i Key Levels MTF:
     1. Presa di liquidità precedente (sweep di uno swing MTF precedente)
     2. Rottura strutturale MTF (chiusura oltre l'ultimo Swing Low/High MTF = BoS)
     3. Creazione di Imbalance (IMB / FVG) o Rejection Block nella gamba di rottura
-    4. Collocazione in Premium (>50% della gamba MTF) per Short, o Discount (<50% della gamba MTF) per Long
-    Il `target_mtf` è l'estremo opposto della gamba MTF validata (il livello MTF che può generare inversione).
+    4. Filtro Fibonacci Obbligatorio:
+       - Key Level in Premium (Fib > 0.50 tra m ed M) -> Setup esclusivamente BEARISH (Short)
+       - Key Level in Discount (Fib < 0.50 tra m ed M) -> Setup esclusivamente BULLISH (Long)
     """
     levels: List[HTFKeyLevel] = []
     if len(df_mtf) < 10:
@@ -136,118 +209,292 @@ def find_validated_mtf_key_levels(
         last_sl_idx, last_sl_price = swing_lows[-1]
 
         # ----------------------------------------------------------------------
-        # CASO A: GAMBA MTF RIBASSISTA VALIDATA (Bearish BoS sotto last_sl_price)
+        # CASO A: GAMBA MTF RIBASSISTA VALIDATA (Range M -> m, POI in PREMIUM > 0.50 Fib)
         # ----------------------------------------------------------------------
         leg_slice_start = max(0, min(last_sh_idx, i - 5))
         origin_high_idx = leg_slice_start + int(np.argmax(highs[leg_slice_start:i + 1]))
-        origin_high = float(highs[origin_high_idx])
+        origin_high_M = float(highs[origin_high_idx])
 
-        prev_highs = [p for idx_s, p in swing_highs[:-1]] if len(swing_highs) > 1 else [origin_high]
-        took_buy_liquidity = origin_high >= min(prev_highs) - (2.0 * pip_size)
+        prev_highs = [p for idx_s, p in swing_highs[:-1]] if len(swing_highs) > 1 else [origin_high_M]
+        took_buy_liquidity = origin_high_M >= min(prev_highs) - (2.0 * pip_size)
 
         broke_mtf_low = closes[i] < last_sl_price or any(
             closes[b] < last_sl_price for b in range(origin_high_idx + 1, i + 1)
         )
 
-        if took_buy_liquidity and broke_mtf_low and origin_high > last_sl_price:
-            leg_low = float(np.min(lows[origin_high_idx:min(len(df_mtf), i + 3)]))
-            leg_range = origin_high - leg_low
-            if leg_range >= 8.0 * pip_size:
-                eq_50 = (origin_high + leg_low) / 2.0
+        if took_buy_liquidity and broke_mtf_low and origin_high_M > last_sl_price:
+            leg_low_m = float(np.min(lows[origin_high_idx:min(len(df_mtf), i + 3)]))
+            fib_map = map_fibonacci_range(origin_high_M, leg_low_m, timeframe=tf_label, pip_size=pip_size)
 
+            if fib_map.range_pips >= 8.0:
                 gap_bear = lows[i - 2] - highs[i]
-                if gap_bear >= min_imb_gap and float(lows[i - 2]) >= eq_50:
+                if gap_bear >= min_imb_gap:
                     kl_top = float(lows[i - 2])
                     kl_bot = float(highs[i])
-                    levels.append(HTFKeyLevel(
-                        level_type="MTF_IMBALANCE",
-                        timeframe=tf_label,
-                        timestamp=times[i],
-                        top=round(kl_top, 5),
-                        bottom=round(kl_bot, 5),
-                        midpoint=round((kl_top + kl_bot) / 2.0, 5),
-                        direction="BEARISH",
-                        range_high=round(origin_high, 5),
-                        range_low=round(leg_low, 5),
-                        equilibrium_50=round(eq_50, 5),
-                        target_mtf=round(leg_low, 5)
-                    ))
+                    kl_mid = (kl_top + kl_bot) / 2.0
+                    # Filtro Fibonacci Obbligatorio: per Short il POI deve essere in PREMIUM (> 0.50)
+                    if fib_map.get_zone(kl_top) == "PREMIUM":
+                        levels.append(HTFKeyLevel(
+                            level_type="MTF_IMBALANCE",
+                            timeframe=tf_label,
+                            timestamp=times[i],
+                            top=round(kl_top, 5),
+                            bottom=round(kl_bot, 5),
+                            midpoint=round(kl_mid, 5),
+                            direction="BEARISH",
+                            range_high=fib_map.high_M,
+                            range_low=fib_map.low_m,
+                            equilibrium_50=fib_map.fib_05_equilibrium,
+                            fib_position=fib_map.fib_level_of_price(kl_mid),
+                            target_mtf=fib_map.low_m
+                        ))
 
                 u_wick = highs[origin_high_idx] - max(opens[origin_high_idx], closes[origin_high_idx])
                 if u_wick >= 2.5 * pip_size and origin_high_idx == i - 1:
-                    kl_top = origin_high
+                    kl_top = origin_high_M
                     kl_bot = float(max(opens[origin_high_idx], closes[origin_high_idx]))
-                    levels.append(HTFKeyLevel(
-                        level_type="MTF_REJECTION_BLOCK",
-                        timeframe=tf_label,
-                        timestamp=times[i],
-                        top=round(kl_top, 5),
-                        bottom=round(kl_bot, 5),
-                        midpoint=round((kl_top + kl_bot) / 2.0, 5),
-                        direction="BEARISH",
-                        range_high=round(origin_high, 5),
-                        range_low=round(leg_low, 5),
-                        equilibrium_50=round(eq_50, 5),
-                        target_mtf=round(leg_low, 5)
-                    ))
+                    kl_mid = (kl_top + kl_bot) / 2.0
+                    if fib_map.get_zone(kl_mid) == "PREMIUM":
+                        levels.append(HTFKeyLevel(
+                            level_type="MTF_REJECTION_BLOCK",
+                            timeframe=tf_label,
+                            timestamp=times[i],
+                            top=round(kl_top, 5),
+                            bottom=round(kl_bot, 5),
+                            midpoint=round(kl_mid, 5),
+                            direction="BEARISH",
+                            range_high=fib_map.high_M,
+                            range_low=fib_map.low_m,
+                            equilibrium_50=fib_map.fib_05_equilibrium,
+                            fib_position=fib_map.fib_level_of_price(kl_mid),
+                            target_mtf=fib_map.low_m
+                        ))
 
         # ----------------------------------------------------------------------
-        # CASO B: GAMBA MTF RIALZISTA VALIDATA (Bullish BoS sopra last_sh_price)
+        # CASO B: GAMBA MTF RIALZISTA VALIDATA (Range m -> M, POI in DISCOUNT < 0.50 Fib)
         # ----------------------------------------------------------------------
         leg_slice_start_b = max(0, min(last_sl_idx, i - 5))
         origin_low_idx = leg_slice_start_b + int(np.argmin(lows[leg_slice_start_b:i + 1]))
-        origin_low = float(lows[origin_low_idx])
+        origin_low_m = float(lows[origin_low_idx])
 
-        prev_lows = [p for idx_s, p in swing_lows[:-1]] if len(swing_lows) > 1 else [origin_low]
-        took_sell_liquidity = origin_low <= max(prev_lows) + (2.0 * pip_size)
+        prev_lows = [p for idx_s, p in swing_lows[:-1]] if len(swing_lows) > 1 else [origin_low_m]
+        took_sell_liquidity = origin_low_m <= max(prev_lows) + (2.0 * pip_size)
 
         broke_mtf_high = closes[i] > last_sh_price or any(
             closes[b] > last_sh_price for b in range(origin_low_idx + 1, i + 1)
         )
 
-        if took_sell_liquidity and broke_mtf_high and origin_low < last_sh_price:
-            leg_high = float(np.max(highs[origin_low_idx:min(len(df_mtf), i + 3)]))
-            leg_range = leg_high - origin_low
-            if leg_range >= 8.0 * pip_size:
-                eq_50 = (leg_high + origin_low) / 2.0
+        if took_sell_liquidity and broke_mtf_high and origin_low_m < last_sh_price:
+            leg_high_M = float(np.max(highs[origin_low_idx:min(len(df_mtf), i + 3)]))
+            fib_map = map_fibonacci_range(leg_high_M, origin_low_m, timeframe=tf_label, pip_size=pip_size)
 
+            if fib_map.range_pips >= 8.0:
                 gap_bull = lows[i] - highs[i - 2]
-                if gap_bull >= min_imb_gap and float(highs[i - 2]) <= eq_50:
+                if gap_bull >= min_imb_gap:
                     kl_top = float(lows[i])
                     kl_bot = float(highs[i - 2])
-                    levels.append(HTFKeyLevel(
-                        level_type="MTF_IMBALANCE",
-                        timeframe=tf_label,
-                        timestamp=times[i],
-                        top=round(kl_top, 5),
-                        bottom=round(kl_bot, 5),
-                        midpoint=round((kl_top + kl_bot) / 2.0, 5),
-                        direction="BULLISH",
-                        range_high=round(leg_high, 5),
-                        range_low=round(origin_low, 5),
-                        equilibrium_50=round(eq_50, 5),
-                        target_mtf=round(leg_high, 5)
-                    ))
+                    kl_mid = (kl_top + kl_bot) / 2.0
+                    # Filtro Fibonacci Obbligatorio: per Long il POI deve essere in DISCOUNT (< 0.50)
+                    if fib_map.get_zone(kl_bot) == "DISCOUNT":
+                        levels.append(HTFKeyLevel(
+                            level_type="MTF_IMBALANCE",
+                            timeframe=tf_label,
+                            timestamp=times[i],
+                            top=round(kl_top, 5),
+                            bottom=round(kl_bot, 5),
+                            midpoint=round(kl_mid, 5),
+                            direction="BULLISH",
+                            range_high=fib_map.high_M,
+                            range_low=fib_map.low_m,
+                            equilibrium_50=fib_map.fib_05_equilibrium,
+                            fib_position=fib_map.fib_level_of_price(kl_mid),
+                            target_mtf=fib_map.high_M
+                        ))
 
                 l_wick = min(opens[origin_low_idx], closes[origin_low_idx]) - lows[origin_low_idx]
                 if l_wick >= 2.5 * pip_size and origin_low_idx == i - 1:
                     kl_top = float(min(opens[origin_low_idx], closes[origin_low_idx]))
-                    kl_bot = origin_low
-                    levels.append(HTFKeyLevel(
-                        level_type="MTF_REJECTION_BLOCK",
-                        timeframe=tf_label,
-                        timestamp=times[i],
-                        top=round(kl_top, 5),
-                        bottom=round(kl_bot, 5),
-                        midpoint=round((kl_top + kl_bot) / 2.0, 5),
-                        direction="BULLISH",
-                        range_high=round(leg_high, 5),
-                        range_low=round(origin_low, 5),
-                        equilibrium_50=round(eq_50, 5),
-                        target_mtf=round(leg_high, 5)
-                    ))
+                    kl_bot = origin_low_m
+                    kl_mid = (kl_top + kl_bot) / 2.0
+                    if fib_map.get_zone(kl_mid) == "DISCOUNT":
+                        levels.append(HTFKeyLevel(
+                            level_type="MTF_REJECTION_BLOCK",
+                            timeframe=tf_label,
+                            timestamp=times[i],
+                            top=round(kl_top, 5),
+                            bottom=round(kl_bot, 5),
+                            midpoint=round(kl_mid, 5),
+                            direction="BULLISH",
+                            range_high=fib_map.high_M,
+                            range_low=fib_map.low_m,
+                            equilibrium_50=fib_map.fib_05_equilibrium,
+                            fib_position=fib_map.fib_level_of_price(kl_mid),
+                            target_mtf=fib_map.high_M
+                        ))
 
     return levels
+
+
+def build_mtf_fractal_targets(
+    df_mtf: pd.DataFrame,
+    tf_label: str = "M15",
+    pip_size: float = CONFIG_ASSET.PIP_SIZE_DEFAULT
+) -> List[MTFFractalTarget]:
+    """
+    Costruisce il catalogo dei Key Levels nei Medium Timeframe (M15 / H1 / H4):
+    - Imbalance (IMB) MTF opposte che devono essere ribilanciate
+    - Massimi ($M$) e Minimi ($m$) strutturali MTF che fungono da primi bersagli magnetici
+    """
+    targets: List[MTFFractalTarget] = []
+    if len(df_mtf) < 5:
+        return targets
+
+    highs = df_mtf['high'].values
+    lows = df_mtf['low'].values
+    times = df_mtf.index
+    min_gap = (0.8 if tf_label == "M15" else (1.2 if tf_label == "H1" else 2.0)) * pip_size
+
+    for i in range(2, len(df_mtf) - 1):
+        # 1. Imbalance Ribassista MTF -> Bersaglio per posizioni LONG (BUY_TARGET)
+        gap_bear = lows[i - 2] - highs[i]
+        if gap_bear >= min_gap:
+            targets.append(MTFFractalTarget(
+                timeframe=tf_label,
+                target_type="FIRST_MTF_IMB",
+                timestamp=times[i],
+                direction_for_exit="BUY_TARGET",
+                price_level=round(float(highs[i]), 5),   # Bordo prossimale inferiore dell'IMB ribassista
+                zone_top=round(float(lows[i - 2]), 5),
+                zone_bottom=round(float(highs[i]), 5)
+            ))
+
+        # 2. Imbalance Rialzista MTF -> Bersaglio per posizioni SHORT (SELL_TARGET)
+        gap_bull = lows[i] - highs[i - 2]
+        if gap_bull >= min_gap:
+            targets.append(MTFFractalTarget(
+                timeframe=tf_label,
+                target_type="FIRST_MTF_IMB",
+                timestamp=times[i],
+                direction_for_exit="SELL_TARGET",
+                price_level=round(float(lows[i]), 5),    # Bordo prossimale superiore dell'IMB rialzista
+                zone_top=round(float(lows[i]), 5),
+                zone_bottom=round(float(highs[i - 2]), 5)
+            ))
+
+        # 3. Swing High MTF ($M$) -> Bersaglio strutturale per posizioni LONG
+        if highs[i] >= highs[i - 1] and highs[i] >= highs[i - 2] and highs[i] >= highs[i + 1]:
+            targets.append(MTFFractalTarget(
+                timeframe=tf_label,
+                target_type="FIRST_MTF_SWING_M",
+                timestamp=times[i + 1],
+                direction_for_exit="BUY_TARGET",
+                price_level=round(float(highs[i]), 5),
+                zone_top=round(float(highs[i]), 5),
+                zone_bottom=round(float(highs[i]), 5)
+            ))
+
+        # 4. Swing Low MTF ($m$) -> Bersaglio strutturale per posizioni SHORT
+        if lows[i] <= lows[i - 1] and lows[i] <= lows[i - 2] and lows[i] <= lows[i + 1]:
+            targets.append(MTFFractalTarget(
+                timeframe=tf_label,
+                target_type="FIRST_MTF_SWING_m",
+                timestamp=times[i + 1],
+                direction_for_exit="SELL_TARGET",
+                price_level=round(float(lows[i]), 5),
+                zone_top=round(float(lows[i]), 5),
+                zone_bottom=round(float(lows[i]), 5)
+            ))
+
+    return targets
+
+
+def select_first_mtf_key_level_target(
+    entry_price: float,
+    sl_pips: float,
+    direction: str,
+    kl: HTFKeyLevel,
+    active_mtf_targets: List[MTFFractalTarget],
+    df_m15_slice: Optional[pd.DataFrame] = None,
+    pip_size: float = CONFIG_ASSET.PIP_SIZE_DEFAULT
+) -> Tuple[float, str]:
+    """
+    Seleziona il PRIMO Key Level nei MTF (H1 / H4 / M15 NON MITIGATO) nella direzione del trade
+    che ottimizza il rapporto R:R (tra 1:2.5 e 1:5.5) senza inseguire utopie oltre il primo
+    vero ostacolo MTF capace di generare un'inversione contraria.
+    """
+    min_dist = sl_pips * 2.5 * pip_size
+    max_dist = sl_pips * 6.5 * pip_size
+
+    candidates: List[Tuple[float, str]] = []
+
+    if direction == "BUY":
+        # 1. Filtra solo i Key Levels MTF sopra entry_price che NON sono ancora stati mitigati
+        for t in active_mtf_targets:
+            if t.direction_for_exit == "BUY_TARGET" and t.timestamp >= kl.timestamp - pd.Timedelta(hours=24):
+                dist = t.price_level - entry_price
+                if min_dist <= dist <= max_dist:
+                    is_unmitigated = True
+                    if df_m15_slice is not None and len(df_m15_slice) > 1:
+                        after_t = df_m15_slice.loc[t.timestamp + pd.Timedelta(minutes=15):]
+                        if len(after_t) > 0 and float(after_t['high'].max()) >= t.price_level:
+                            is_unmitigated = False
+                    if is_unmitigated:
+                        candidates.append((t.price_level, f"{t.timeframe}_{t.target_type}"))
+
+        # 2. Livelli strutturali della Catena MTF (Primo POI in Premium 0.786 Fib e Massimo M del Range MTF)
+        fib_786_premium = kl.range_low + (kl.range_high - kl.range_low) * 0.786
+        for lvl_price, lvl_name in [
+            (fib_786_premium, f"{kl.timeframe}_FIRST_PREMIUM_POI"),
+            (kl.range_high, f"{kl.timeframe}_RANGE_HIGH_M")
+        ]:
+            dist = lvl_price - entry_price
+            if min_dist <= dist <= max_dist * 1.4:
+                candidates.append((round(lvl_price, 5), lvl_name))
+
+        if candidates:
+            # Sceglie il PRIMO Key Level MTF non mitigato incontrato nella salita
+            candidates.sort(key=lambda x: x[0])
+            return round(candidates[0][0], 5), candidates[0][1]
+
+        # Se il Massimo M del range MTF è oltre 1.8R, usa il Massimo M del range MTF (o clampa a 3.5R)
+        if kl.range_high > entry_price + (sl_pips * 1.8 * pip_size):
+            tp_opt = min(kl.range_high, entry_price + (sl_pips * 4.5 * pip_size))
+            return round(tp_opt, 5), f"{kl.timeframe}_RANGE_HIGH_M"
+        return round(entry_price + (sl_pips * 3.0 * pip_size), 5), f"{kl.timeframe}_FIRST_MTF_KL"
+
+    else:
+        # 1. Da Premium (> 0.50 Fib) cerchiamo il PRIMO Key Level MTF NON MITIGATO sotto entry_price
+        for t in active_mtf_targets:
+            if t.direction_for_exit == "SELL_TARGET" and t.timestamp >= kl.timestamp - pd.Timedelta(hours=24):
+                dist = entry_price - t.price_level
+                if min_dist <= dist <= max_dist:
+                    is_unmitigated = True
+                    if df_m15_slice is not None and len(df_m15_slice) > 1:
+                        after_t = df_m15_slice.loc[t.timestamp + pd.Timedelta(minutes=15):]
+                        if len(after_t) > 0 and float(after_t['low'].min()) <= t.price_level:
+                            is_unmitigated = False
+                    if is_unmitigated:
+                        candidates.append((t.price_level, f"{t.timeframe}_{t.target_type}"))
+
+        # 2. Livelli strutturali della Catena MTF (Primo POI in Discount 0.214 Fib e Minimo m del Range MTF)
+        fib_214_discount = kl.range_low + (kl.range_high - kl.range_low) * 0.214
+        for lvl_price, lvl_name in [
+            (fib_214_discount, f"{kl.timeframe}_FIRST_DISCOUNT_POI"),
+            (kl.range_low, f"{kl.timeframe}_RANGE_LOW_m")
+        ]:
+            dist = entry_price - lvl_price
+            if min_dist <= dist <= max_dist * 1.4:
+                candidates.append((round(lvl_price, 5), lvl_name))
+
+        if candidates:
+            # Sceglie il PRIMO Key Level MTF non mitigato incontrato nella discesa
+            candidates.sort(key=lambda x: x[0], reverse=True)
+            return round(candidates[0][0], 5), candidates[0][1]
+
+        if kl.range_low < entry_price - (sl_pips * 1.8 * pip_size):
+            tp_opt = max(kl.range_low, entry_price - (sl_pips * 4.5 * pip_size))
+            return round(tp_opt, 5), f"{kl.timeframe}_RANGE_LOW_m"
+        return round(entry_price - (sl_pips * 3.0 * pip_size), 5), f"{kl.timeframe}_FIRST_MTF_KL"
 
 
 def is_key_level_invalidated_by_closes(
@@ -290,8 +537,6 @@ def detect_horizontal_accumulation_box(
     """
     Cerca una Box di Accumulazione Orizzontale (`M` ed `m`) immediatamente precedente
     alla candela di manipolazione (`manip_idx`).
-    Una vera box orizzontale ha range compresso, almeno 6-14 candele ed escursione laterale
-    (con almeno 2 swing/tocchi sia nella metà superiore che nella metà inferiore).
     """
     max_pips = CONFIG_EXEC.MAX_BOX_RANGE_PIPS_M1 if timeframe == "M1" else CONFIG_EXEC.MAX_BOX_RANGE_PIPS_M5
     for length in range(12, CONFIG_EXEC.MIN_BOX_BARS - 1, -1):
@@ -329,9 +574,7 @@ def detect_dynamic_swing_level(
 ) -> Optional[DynamicSwingLevel]:
     """
     Rileva l'ultimo livello strutturale `M` (per Long) o `m` (per Short) di un'Accumulazione Dinamica
-    formatosi prima o durante l'arrivo sul Key Level MTF:
-    - Per SELL: l'ultimo minimo di swing `m` (Higher Low) che ha preceduto il massimo di manipolazione.
-    - Per BUY: l'ultimo massimo di swing `M` (Lower High) che ha preceduto il minimo di manipolazione.
+    formatosi prima o durante l'arrivo sul Key Level MTF.
     """
     start_i = max(1, manip_idx - lookback)
     if manip_idx - start_i < 3:
@@ -342,7 +585,6 @@ def detect_dynamic_swing_level(
     times = df_ltf.index
 
     if direction == "SELL":
-        # Cerchiamo l'ultimo minimo relativo `m` prima di manip_idx
         for k in range(manip_idx - 1, start_i, -1):
             if lows[k] <= lows[k - 1] and lows[k] <= lows[min(len(lows) - 1, k + 1)]:
                 if (highs[manip_idx] - lows[k]) >= 1.5 * pip_size:
@@ -352,7 +594,6 @@ def detect_dynamic_swing_level(
                         level_price=round(float(lows[k]), 5),
                         swing_type="m_LOW"
                     )
-        # Fallback al minimo locale delle ultime 5 barre prima dello spike
         sub_lows = lows[max(0, manip_idx - 6):manip_idx]
         if len(sub_lows) > 0:
             rel_idx = int(np.argmin(sub_lows)) + max(0, manip_idx - 6)
@@ -364,7 +605,6 @@ def detect_dynamic_swing_level(
             )
 
     elif direction == "BUY":
-        # Cerchiamo l'ultimo massimo relativo `M` prima di manip_idx
         for k in range(manip_idx - 1, start_i, -1):
             if highs[k] >= highs[k - 1] and highs[k] >= highs[min(len(highs) - 1, k + 1)]:
                 if (highs[k] - lows[manip_idx]) >= 1.5 * pip_size:
@@ -395,15 +635,11 @@ def detect_breakout_with_imb_and_two_closes(
     timeframe: str = "M1",
     max_search_bars: int = 16,
     pip_size: float = CONFIG_ASSET.PIP_SIZE_DEFAULT
-) -> Optional[ Tuple[BreakoutImbalance, int, pd.Timestamp] ]:
+) -> Optional[Tuple[BreakoutImbalance, int, pd.Timestamp]]:
     """
     Verifica la sequenza obbligatoria dopo la manipolazione:
     1. Rottura del livello `m` (per SELL) o `M` (per BUY) accompagnata da un Imbalance (IMB / FVG).
     2. Almeno 2 chiusure di candela al di sotto di `m` (SELL) o al di sopra di `M` (BUY).
-
-    Ritorna:
-      (BreakoutImbalance, confirm_idx, confirm_timestamp)
-      dove `confirm_idx` è l'indice della seconda candela chiusa oltre `M`/`m`.
     """
     min_gap = (
         CONFIG_EXEC.MIN_IMB_GAP_PIPS_M1 if timeframe == "M1" else CONFIG_EXEC.MIN_IMB_GAP_PIPS_M5
@@ -420,7 +656,6 @@ def detect_breakout_with_imb_and_two_closes(
     closes_beyond_count = 0
 
     for k in range(manip_idx + 1, end_search):
-        # Controlla se nel movimento di rottura si è formato un IMB a 3 candele (tra k-2, k-1, k)
         if k >= manip_idx + 2:
             disp_range = max(1e-9, highs[k - 1] - lows[k - 1])
             disp_body = abs(closes[k - 1] - opens[k - 1])
@@ -428,7 +663,6 @@ def detect_breakout_with_imb_and_two_closes(
 
             if direction == "SELL" and is_displacement:
                 gap = lows[k - 2] - highs[k]
-                # L'IMB deve accompagnare l'impulso ribassista che rompe o attraversa `m`
                 if gap >= min_gap and closes[k - 1] < opens[k - 1] and highs[k] <= level_M_or_m + (1.5 * pip_size):
                     if found_imb is None or gap > (found_imb.top - found_imb.bottom):
                         top_p = float(lows[k - 2])
@@ -458,7 +692,6 @@ def detect_breakout_with_imb_and_two_closes(
                             gap_pips=round(gap / pip_size, 1)
                         )
 
-        # Conteggio delle chiusure oltre `M` o `m`
         if direction == "SELL":
             if closes[k] < level_M_or_m:
                 closes_beyond_count += 1
@@ -466,7 +699,6 @@ def detect_breakout_with_imb_and_two_closes(
             if closes[k] > level_M_or_m:
                 closes_beyond_count += 1
 
-        # Appena abbiamo SIA l'IMB di rottura SIA almeno 2 chiusure oltre M/m -> CONFERMATO!
         if found_imb is not None and closes_beyond_count >= CONFIG_EXEC.MIN_CONFIRMATION_CLOSES_BEYOND_M:
             return found_imb, k, times[k]
 

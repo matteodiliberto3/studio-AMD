@@ -1,59 +1,29 @@
-# ==============================================================================
-# TRADING FRAMEWORK & CODE DIRECTIVES (.cursorrules)
-# Progetto: Analisi Operatività FX / Institutional A-M-D & Dynamic Accumulation
-# ==============================================================================
+# Regole Architetturali — Catena Frattale dei Timeframe, Fibonacci (M/m) e Target sul Primo Key Level MTF
 
-[SYSTEM & OPERATIONAL IDENTITY]
-Sei l'assistente quantitativo e ingegnere di trading specializzato nel framework istituzionale del progetto.
-Ogni script Python, modulo di backtest, modello webhook e script Pine Script DEVE implementare esclusivamente il meccanismo di entry basato su:
-KEY LEVEL MTF VALIDATO -> ACCUMULAZIONE (ORIZZONTALE O DINAMICA) -> ROTTURA DI M/m CON IMB -> ALMENO 2 CHIUSURE OLTRE M/m -> RIENTRO (RETEST) NELL'IMB -> TARGET MTF.
+## 1. Mappatura del Range MTF/HTF & Fibonacci (Estremi $M$ ed $m$)
+1. **Estremi Assoluti del Range ($M$ ed $m$):**
+   - Per ogni struttura attiva sui Medium/Higher Timeframe (H4 / H1 / M15), il motore identifica rigorosamente il massimo assoluto del range ($M$) e il minimo assoluto del range ($m$).
+2. **Tracciamento Virtuale di Fibonacci (`0.0`, `0.50 Equilibrium`, `1.0`):**
+   - `0.0` = Minimo del range ($m$)
+   - `0.50` = Equilibrium del range ($\frac{M + m}{2}$)
+   - `1.0` = Massimo del range ($M$)
+3. **Filtro Obbligatorio di Posizione (Premium vs Discount):**
+   - **Zona Discount (`< 0.50` del Fibonacci tra $m$ ed $M$):** Il motore cerca **ESCLUSIVAMENTE setup LONG** su Key Level MTF (IMB / Rejection Block) situati in Discount.
+   - **Zona Premium (`> 0.50` del Fibonacci tra $m$ ed $M$):** Il motore cerca **ESCLUSIVAMENTE setup SHORT** su Key Level MTF (IMB / Rejection Block) situati in Premium.
+   - **Tenuta del Key Level (Fonte 16):** Se il prezzo effettua $\ge 2$ chiusure di corpo consecutive oltre il Key Level MTF, il livello è invalidato.
 
----
+## 2. Catena Frattale dei Timeframe (Il "Dove devono arrivare")
+1. **Connessione Gerarchica HTF/MTF $\to$ LTF $\to$ Primo Key Level MTF:**
+   - I timeframe superiori (H4 / H1 / M15) dettano sia la zona di reazione (POI in Discount o Premium) sia il **bersaglio magnetico di arrivo (il Primo Key Level MTF opposto)**.
+   - Il timeframe inferiore (M5 a corpo, oppure M1 "Raggi X" quando il tocco M5 è compresso in una wick) esegue esclusivamente il trigger d'inversione.
 
-## 1. CONTESTO E VALIDAZIONE DEL KEY LEVEL MTF
-
-1. **Requisiti di Esistenza del Key Level MTF (H4 / H1):**
-   - Un Range MTF e il suo Key Level esistono **SOLO SE** l'impulso che li ha generati ha:
-     1. Preso liquidità precedente (Liquidity Sweep),
-     2. Rotto la struttura (BoS / MSS),
-     3. Lasciato un'Imbalance (IMB / FVG) o un Rejection Block.
-2. **Filtro Premium / Discount (50% Equilibrium):**
-   - Short valutati **SOLO sopra il 50%** (Premium) del range MTF.
-   - Long valutati **SOLO sotto il 50%** (Discount) del range MTF.
-3. **Regola di Tenuta vs Accettazione sul Key Level (Fonte 16):**
-   - Il Key Level tiene se il prezzo lascia **ombre (wicks)** o una singola chiusura immediatamente riassorbita.
-   - Se il prezzo effettua **2 o più chiusure di corpo consecutive oltre il Key Level MTF**, il mercato sta accettando nuovi prezzi: il Key Level è invalidato e qualsiasi setup viene annullato.
-
----
-
-## 2. IL MECCANISMO DI ENTRY (LE 2 FORME DI ACCUMULAZIONE)
-
-Non si entra MAI dentro la box di accumulo e non si entra MAI alla cieca sulla prima wick di manipolazione.
-Qualsiasi entrata (sia su **M5** a corpo visibile, sia scendendo a "raggi X" su **M1** quando M5 mostra solo un'ombra compressa) richiede **SEMPRE** la seguente catena di conferma:
-
-### Forma 1 — `AMD_HORIZONTAL_BOX` (Accumulazione Orizzontale Classica A-M-D)
-1. **Accumulazione (A):** Formazione di una box laterale orizzontale (`M` = tetto, `m` = pavimento) in prossimità del Key Level MTF.
-2. **Manipolazione (M):** Uscita dalla box che spinge fino a toccare il Key Level MTF e viene respinta (nessuna accettazione oltre il KL).
-3. **Rottura con IMB:** Il prezzo inverte con displacement e rompe il lato opposto della box (`m` per Short, `M` per Long) lasciando un **Imbalance (IMB)**.
-4. **Conferma delle Chiusure:** Si attendono **almeno 2 chiusure di candela** al di sotto di `m` (per Short) o al di sopra di `M` (per Long).
-5. **Entry sul Rientro nell'IMB:** Si posiziona l'ordine Limit sul **rientro (retest) dentro l'IMB** appena creato.
-
-### Forma 2 — `DYNAMIC_ACCUMULATION_BOS` (Accumulazione Dinamica / Rottura di `M` o `m`)
-1. **Accumulazione Dinamica:** Sul Key Level MTF il prezzo non disegna un rettangolo piatto ma una struttura dinamica a swing, creando un ultimo Massimo strutturale `M` (per Long) o Minimo strutturale `m` (per Short) prima della reazione sul KL.
-2. **Rottura di `M` / `m` con IMB:** Il prezzo rompe con forza quel livello `M` (Long) o `m` (Short) lasciando un **Imbalance (IMB)** a cavallo della rottura.
-3. **Conferma delle Chiusure:** Si attendono **almeno 2 chiusure di candela** al di sopra di `M` (per Long) o al di sotto di `m` (per Short).
-4. **Entry sul Rientro nell'IMB:** Si posiziona l'ordine Limit sul **rientro (retest) dentro quell'IMB**.
-
----
-
-## 3. STOP LOSS, GESTIONE E TARGET MTF
-
-- **Stop Loss:** Posizionato rigorosamente oltre il massimo/minimo della manipolazione (il punto estremo che ha toccato il Key Level MTF).
-- **Check al 50% del Range:** Punto di controllo intermedio (parziale/sicurezza). Dopo il 50%, lo Stop Loss non va mai a Break-Even sul punto di entrata (soggetto a retest), ma dietro il nuovo swing strutturale creato dalla distribuzione.
-- **Take Profit Finale:** Posizionato sul **Target MTF opposto** (la struttura o Key Level MTF opposto che potrebbe generare una nuova inversione).
-
----
-
-## 4. DIVIETO DI DATI SINTETICI
-
-- È vietato utilizzare dati generati artificialmente (`np.random`) per valutare le metriche della strategia. Tutti i backtest devono girare su dati storici reali esportati da TradingView, MetaTrader 5 o feed reali di mercato, esportando il log completo dei trade in `data/trades_executed_log.csv` per verifica visiva candela per candela.
+## 3. Protocollo Unificato di Entrata e Uscita (Ottimizzazione del R:R)
+1. **Trigger di Ingresso LTF (M5 / M1):**
+   - Il prezzo in *Discount* (per Long) o in *Premium* (per Short) reagisce sul Key Level MTF e rompe:
+     * **Morfologia 1 (`AMD_HORIZONTAL_BOX`):** Il bordo opposto ($M$ per Long, $m$ per Short) di un'accumulazione orizzontale costruita sul Key Level.
+     * **Morfologia 2 (`DYNAMIC_ACCUMULATION_BOS`):** L'ultimo massimo strutturale $M$ (per Long) o minimo strutturale $m$ (per Short) dell'accumulazione dinamica.
+   - La rottura di $M$ o $m$ deve generare un'**IMB (Fair Value Gap)** ed essere confermata da **almeno 2 chiusure di candela oltre $M$ o $m$**.
+   - L'ordine Limit viene eseguito sul **rientro (retest) millimetrico dentro quell'IMB LTF**.
+2. **Uscita sul Primo Key Level MTF (`find_first_opposing_mtf_target`):**
+   - Il Take Profit **non** punta a target irrealistici o a un R:R fisso, ma è vincolato chirurgicamente al **primo Key Level nei MTF (M15 / H1 / H4)** non ancora mitigato che il prezzo incontra nella direzione del trade (la prima IMB MTF opposta da chiudere, il primo Rejection Block MTF opposto o il primo swing strutturale $M$/$m$ MTF).
+   - Questo massimizza il Win Rate sul target finale e ottimizza il rapporto R:R (tipicamente tra 1:2.5 e 1:5) uscendo prima che il primo Key Level MTF opposto inneschi un ritracciamento o un'inversione contraria.
