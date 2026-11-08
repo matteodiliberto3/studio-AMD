@@ -1,0 +1,369 @@
+[
+  {
+    "received_at": "2026-11-08T14:24:14.813144",
+    "payload": {
+      "alert": {
+        "symbol": "EURUSD",
+        "timeframe": "5",
+        "action": "SELL",
+        "price": 1.1161,
+        "sl": 1.117,
+        "tp": null,
+        "session": "LONDON",
+        "zone": "PREMIUM",
+        "reason": "Bearish FVG retest on H4 IMB",
+        "passphrase": null
+      },
+      "validation": {
+        "accepted": true,
+        "status": "APPROVED_FOR_EXECUTION",
+        "symbol": "EURUSD",
+        "action": "SELL",
+        "entry_price": 1.1161,
+        "sl": 1.117,
+        "tp": 1.11385,
+        "sl_pips": 9.0,
+        "estimated_rr": 2.5,
+        "rejection_reasons": []
+      }
+    }
+  },
+  {
+    "received_at": "2026-11-08T14:24:14.848184",
+    "payload": {
+      "alert": {
+        "symbol": "EURUSD",
+        "timeframe": "5",
+        "action": "SELL",
+        "price": 1.1161,
+        "sl": 1.117,
+        "tp": null,
+        "session": "LONDON",
+        "zone": "DISCOUNT",
+        "reason": "Bearish FVG retest on H4 IMB",
+        "passphrase": null
+      },
+      "validation": {
+        "accepted": false,
+        "status": "REJECTED_BY_FRAMEWORK",
+        "symbol": "EURUSD",
+        "action": "SELL",
+        "entry_price": 1.1161,
+        "sl": 1.117,
+        "tp": 1.11385,
+        "sl_pips": 9.0,
+        "estimated_rr": 2.5,
+        "rejection_reasons": [
+          "Violazione Framework: Operazione SELL consentita esclusivamente in zona PREMIUM."
+        ]
+      }
+    }
+  },
+  {
+    "received_at": "2026-11-08T14:24:14.888176",
+    "payload": {
+      "alert": {
+        "symbol": "EURUSD",
+        "timeframe": "5",
+        "action": "SELL",
+        "price": 1.1161,
+        "sl": 1.117,
+        "tp": null,
+        "session": "ASIA",
+        "zone": "PREMIUM",
+        "reason": "Bearish FVG retest on H4 IMB",
+        "passphrase": null
+      },
+      "validation": {
+        "accepted": false,
+        "status": "REJECTED_BY_FRAMEWORK",
+        "symbol": "EURUSD",
+        "action": "SELL",
+        "entry_price": 1.1161,
+        "sl": 1.117,
+        "tp": 1.11385,
+        "sl_pips": 9.0,
+        "estimated_rr": 2.5,
+        "rejection_reasons": [
+          "Violazione Framework: Sessione 'ASIA' non consentita (consentite: LONDON, NEW_YORK)."
+        ]
+      }
+    }
+  },
+  {
+    "received_at": "2026-11-08T14:24:21.124830",
+    "payload": {
+      "alert": {
+        "symbol": "EURUSD",
+        "timeframe": "5",
+        "action": "SELL",
+        "price": 1.1161,
+        "sl": 1.117,
+        "tp": null,
+        "session": "LONDON",
+        "zone": "PREMIUM",
+        "reason": "Bearish FVG retest on H4 IMB",
+        "passphrase": null
+      },
+      "validation": {
+        "accepted": true,
+        "status": "APPROVED_FOR_EXECUTION",
+        "symbol": "EURUSD",
+        "action": "SELL",
+        "entry_price": 1.1161,
+        "sl": 1.117,
+        "tp": 1.11385,
+        "sl_pips": 9.0,
+        "estimated_rr": 2.5,
+        "rejection_reasons": []
+      }
+    }
+  },
+  {
+    "received_at": "2026-11-08T14:24:21.140722",
+    "payload": {
+      "alert": {
+        "symbol": "EURUSD",
+        "timeframe": "5",
+        "action": "SELL",
+        "price": 1.1161,
+        "sl": 1.117,
+        "tp": null,
+        "session": "LONDON",
+        "zone": "DISCOUNT",
+        "reason": "Bearish FVG retest on H4 IMB",
+        "passphrase": null
+      },
+      "validation": {
+        "accepted": false,
+        "status": "REJECTED_BY_FRAMEWORK",
+        "symbol": "EURUSD",
+        "action": "SELL",
+        "entry_price": 1.1161,
+        "sl": 1.117,
+        "tp": 1.11385,
+        "sl_pips": 9.0,
+        "estimated_rr": 2.5,
+        "rejection_reasons": [
+          "Violazione Framework: Operazione SELL consentita esclusivamente in zona PREMIUM."
+        ]
+      }
+    }
+  },
+  {
+    "received_at": "2026-11-08T14:24:21.155371",
+    "payload": {
+      "alert": {
+        "symbol": "EURUSD",
+        "timeframe": "5",
+        "action": "SELL",
+        "price": 1.1161,
+        "sl": 1.117,
+        "tp": null,
+        "session": "ASIA",
+        "zone": "PREMIUM",
+        "reason": "Bearish FVG retest on H4 IMB",
+        "passphrase": null
+      },
+      "validation": {
+        "accepted": false,
+        "status": "REJECTED_BY_FRAMEWORK",
+        "symbol": "EURUSD",
+        "action": "SELL",
+        "entry_price": 1.1161,
+        "sl": 1.117,
+        "tp": 1.11385,
+        "sl_pips": 9.0,
+        "estimated_rr": 2.5,
+        "rejection_reasons": [
+          "Violazione Framework: Sessione 'ASIA' non consentita (consentite: LONDON, NEW_YORK)."
+        ]
+      }
+    }
+  },
+  {
+    "received_at": "2026-11-08T14:24:34.558462",
+    "payload": {
+      "alert": {
+        "symbol": "EURUSD",
+        "timeframe": "5",
+        "action": "SELL",
+        "price": 1.1161,
+        "sl": 1.117,
+        "tp": null,
+        "session": "LONDON",
+        "zone": "PREMIUM",
+        "reason": "Bearish FVG retest on H4 IMB",
+        "passphrase": null
+      },
+      "validation": {
+        "accepted": true,
+        "status": "APPROVED_FOR_EXECUTION",
+        "symbol": "EURUSD",
+        "action": "SELL",
+        "entry_price": 1.1161,
+        "sl": 1.117,
+        "tp": 1.11385,
+        "sl_pips": 9.0,
+        "estimated_rr": 2.5,
+        "rejection_reasons": []
+      }
+    }
+  },
+  {
+    "received_at": "2026-11-08T14:24:34.569957",
+    "payload": {
+      "alert": {
+        "symbol": "EURUSD",
+        "timeframe": "5",
+        "action": "SELL",
+        "price": 1.1161,
+        "sl": 1.117,
+        "tp": null,
+        "session": "LONDON",
+        "zone": "DISCOUNT",
+        "reason": "Bearish FVG retest on H4 IMB",
+        "passphrase": null
+      },
+      "validation": {
+        "accepted": false,
+        "status": "REJECTED_BY_FRAMEWORK",
+        "symbol": "EURUSD",
+        "action": "SELL",
+        "entry_price": 1.1161,
+        "sl": 1.117,
+        "tp": 1.11385,
+        "sl_pips": 9.0,
+        "estimated_rr": 2.5,
+        "rejection_reasons": [
+          "Violazione Framework: Operazione SELL consentita esclusivamente in zona PREMIUM."
+        ]
+      }
+    }
+  },
+  {
+    "received_at": "2026-11-08T14:24:34.580738",
+    "payload": {
+      "alert": {
+        "symbol": "EURUSD",
+        "timeframe": "5",
+        "action": "SELL",
+        "price": 1.1161,
+        "sl": 1.117,
+        "tp": null,
+        "session": "ASIA",
+        "zone": "PREMIUM",
+        "reason": "Bearish FVG retest on H4 IMB",
+        "passphrase": null
+      },
+      "validation": {
+        "accepted": false,
+        "status": "REJECTED_BY_FRAMEWORK",
+        "symbol": "EURUSD",
+        "action": "SELL",
+        "entry_price": 1.1161,
+        "sl": 1.117,
+        "tp": 1.11385,
+        "sl_pips": 9.0,
+        "estimated_rr": 2.5,
+        "rejection_reasons": [
+          "Violazione Framework: Sessione 'ASIA' non consentita (consentite: LONDON, NEW_YORK)."
+        ]
+      }
+    }
+  },
+  {
+    "received_at": "2026-11-08T14:27:16.834228",
+    "payload": {
+      "alert": {
+        "symbol": "EURUSD",
+        "timeframe": "5",
+        "action": "SELL",
+        "price": 1.1161,
+        "sl": 1.117,
+        "tp": null,
+        "session": "LONDON",
+        "zone": "PREMIUM",
+        "smt_divergence": false,
+        "reason": "Bearish FVG retest on H4 IMB",
+        "passphrase": null
+      },
+      "validation": {
+        "accepted": true,
+        "status": "APPROVED_FOR_EXECUTION",
+        "symbol": "EURUSD",
+        "action": "SELL",
+        "entry_price": 1.1161,
+        "sl": 1.117,
+        "tp": 1.11385,
+        "sl_pips": 9.0,
+        "estimated_rr": 2.5,
+        "rejection_reasons": []
+      }
+    }
+  },
+  {
+    "received_at": "2026-11-08T14:27:16.852147",
+    "payload": {
+      "alert": {
+        "symbol": "EURUSD",
+        "timeframe": "5",
+        "action": "SELL",
+        "price": 1.1161,
+        "sl": 1.117,
+        "tp": null,
+        "session": "LONDON",
+        "zone": "DISCOUNT",
+        "smt_divergence": false,
+        "reason": "Bearish FVG retest on H4 IMB",
+        "passphrase": null
+      },
+      "validation": {
+        "accepted": false,
+        "status": "REJECTED_BY_FRAMEWORK",
+        "symbol": "EURUSD",
+        "action": "SELL",
+        "entry_price": 1.1161,
+        "sl": 1.117,
+        "tp": 1.11385,
+        "sl_pips": 9.0,
+        "estimated_rr": 2.5,
+        "rejection_reasons": [
+          "Violazione Framework: Operazione SELL consentita esclusivamente in zona PREMIUM."
+        ]
+      }
+    }
+  },
+  {
+    "received_at": "2026-11-08T14:27:16.869781",
+    "payload": {
+      "alert": {
+        "symbol": "EURUSD",
+        "timeframe": "5",
+        "action": "SELL",
+        "price": 1.1161,
+        "sl": 1.117,
+        "tp": null,
+        "session": "ASIA",
+        "zone": "PREMIUM",
+        "smt_divergence": false,
+        "reason": "Bearish FVG retest on H4 IMB",
+        "passphrase": null
+      },
+      "validation": {
+        "accepted": false,
+        "status": "REJECTED_BY_FRAMEWORK",
+        "symbol": "EURUSD",
+        "action": "SELL",
+        "entry_price": 1.1161,
+        "sl": 1.117,
+        "tp": 1.11385,
+        "sl_pips": 9.0,
+        "estimated_rr": 2.5,
+        "rejection_reasons": [
+          "Violazione Framework: Sessione 'ASIA' non consentita (consentite: LONDON, NEW_YORK)."
+        ]
+      }
+    }
+  }
+]
