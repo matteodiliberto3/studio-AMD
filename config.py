@@ -1,57 +1,77 @@
 """
 Configurazione Globale del Framework Operativo FX
-Smart Money Concepts / Sequenziale A-M-D Top-Down
+Meccanismo Unificato di Entry su Key Level MTF:
+1. AMD_HORIZONTAL_BOX (Accumulazione Orizzontale Classica con Box M/m)
+2. DYNAMIC_ACCUMULATION_BOS (Accumulazione Dinamica con Rottura dello Swing M/m)
+
+In entrambi i casi:
+Rottura di M/m con IMB -> Almeno 2 chiusure oltre M/m -> Rientro (Retest) nell'IMB -> TP su Target MTF.
 """
 from dataclasses import dataclass
 from datetime import time
 from enum import Enum
 
 
-class EntryType(str, Enum):
-    MANIPULATION = "ENTRY_MANIPULATION"                 # Entry 1: Aggressiva sul picco di manipolazione del Key Level
-    POST_BREAKOUT_RETEST = "ENTRY_POST_BREAKOUT_RETEST" # Entry 2: Conservativa sul retest IMB / bordo rotto
+class AccumulationType(str, Enum):
+    AMD_HORIZONTAL_BOX = "AMD_HORIZONTAL_BOX"             # Box laterale orizzontale -> Manipolazione su KL -> Rottura box con IMB
+    DYNAMIC_ACCUMULATION_BOS = "DYNAMIC_ACCUMULATION_BOS" # Accumulazione dinamica a swing -> Rottura di M o m con IMB
 
 
 @dataclass(frozen=True)
 class SessionTimingConfig:
     TIMEZONE: str = "Europe/Rome"
 
-    # Finestra Operativa Estesa (copre London Open, New York AM, New York PM / London Close 16:00-20:00)
+    # Finestra Operativa (08:00 - 20:00 CET copre Londra, NY AM e NY PM / London Close)
     ACTIVE_WINDOW_START: time = time(8, 0)
     ACTIVE_WINDOW_END: time = time(20, 0)
 
-    # Monitoraggio Cambi di Periodo OHLC
-    MONITOR_H1_OPEN_MINUTES: int = 15     # Primi 15 min di ogni nuova candela H1
-    MONITOR_H4_OPEN_MINUTES: int = 30     # Primi 30 min di ogni nuova candela H4
+    # Monitoraggio Cambi di Periodo OHLC (H1 e H4)
+    MONITOR_H1_OPEN_MINUTES: int = 15
+    MONITOR_H4_OPEN_MINUTES: int = 30
 
 
 @dataclass(frozen=True)
 class HTFRangeConfig:
-    # Criteri di Validazione HTF Range (H4 / Daily)
-    REQUIRE_LIQUIDITY_SWEEP: bool = True       # Presa di liquidità (PDH/PDL o Swing High/Low)
-    REQUIRE_STRUCTURAL_BREAK: bool = True      # Rottura di struttura con displacement
-    REQUIRE_IMBALANCE_OR_REJECTION: bool = True # Presenza di Imbalance (FVG) o Rejection Block
+    # Criteri di Validazione del Range e Key Level MTF/HTF
+    REQUIRE_LIQUIDITY_SWEEP: bool = True
+    REQUIRE_STRUCTURAL_BREAK: bool = True
+    REQUIRE_IMBALANCE_OR_REJECTION: bool = True
 
-    # Premium / Discount: soglia 50% Equilibrium del range HTF
+    # Regola Fonte 16: se >= 2 chiusure di corpo consecutive chiudono oltre il Key Level, il livello è invalidato
+    MAX_CONSECUTIVE_CLOSES_BEYOND_KL: int = 2
+
+    # Filtro 50% Equilibrium del range MTF
     EQUILIBRIUM_THRESHOLD: float = 0.50
 
 
 @dataclass(frozen=True)
 class ExecutionConfig:
-    # Tipologie di Ingresso Ammesse
-    ALLOWED_ENTRIES: tuple = (EntryType.MANIPULATION, EntryType.POST_BREAKOUT_RETEST)
+    # Le due forme di accumulazione ammesse
+    ALLOWED_ACCUMULATION_TYPES: tuple = (
+        AccumulationType.AMD_HORIZONTAL_BOX,
+        AccumulationType.DYNAMIC_ACCUMULATION_BOS,
+    )
 
-    # Parametri LTF
-    MIN_ACCUMULATION_BARS: int = 8             # Minimo candele per definire accumulo M1/M5
-    MAX_ACCUMULATION_PIPS_M1: float = 12.0     # Ampiezza max dell'accumulo su M1
-    MIN_BREAKOUT_IMB_PIPS: float = 1.2         # Gap minimo per Imbalance LTF valido
+    # Regola di Conferma della Rottura: almeno 2 chiusure oltre M o m
+    MIN_CONFIRMATION_CLOSES_BEYOND_M: int = 2
 
-    # Gestione Stop Loss
-    SL_BUFFER_PIPS: float = 1.5                # Buffer oltre l'estremo di manipolazione
+    # Parametri per la Box di Accumulazione Orizzontale
+    MIN_BOX_BARS: int = 6
+    MAX_BOX_BARS: int = 20
+    MAX_BOX_RANGE_PIPS_M1: float = 10.0
+    MAX_BOX_RANGE_PIPS_M5: float = 18.0
 
-    # Gestione Target Contestuali (NO R:R FISSO)
-    TARGET_1_PARTIAL_PCT: float = 0.50         # Target 1 di sicurezza al 50% del leg/range
-    CLOSE_PARTIAL_SIZE_PCT: float = 0.50       # Chiudi il 50% della posizione a Target 1
+    # Parametri per l'Imbalance (IMB) sulla rottura di M/m
+    MIN_IMB_GAP_PIPS_M1: float = 0.8
+    MIN_IMB_GAP_PIPS_M5: float = 1.5
+    MIN_DISPLACEMENT_BODY_RATIO: float = 0.55  # Corpo candela >= 55% del range high-low
+
+    # Finestra massima (in barre) per attendere il rientro (retest) nell'IMB dopo le 2 chiusure
+    MAX_BARS_WAIT_FOR_IMB_RETEST: int = 25
+
+    # Gestione Stop Loss e Target MTF
+    SL_BUFFER_PIPS: float = 1.0
+    TARGET_1_PARTIAL_PCT: float = 0.50         # 50% del range verso il Target MTF
     TRAIL_SL_AFTER_T1: bool = True             # Sposta SL dietro il nuovo swing strutturale (MAI a breakeven sull'entry)
 
 

@@ -497,5 +497,69 @@
         ]
       }
     }
+  },
+  {
+    "received_at": "2026-11-08T15:36:01.509356",
+    "payload": {
+      "alert": {
+        "symbol": "EURUSD",
+        "timeframe": "M1",
+        "entry_type": "AMD_HORIZONTAL_BOX",
+        "action": "SELL",
+        "entry_price": 1.11535,
+        "sl_price": 1.11625,
+        "tp_50_eq": 1.113,
+        "tp_structural": 1.111,
+        "htf_key_level": "MTF_PREMIUM_KL",
+        "passphrase": null
+      },
+      "validation": {
+        "accepted": true,
+        "status": "APPROVED_INSTITUTIONAL_ENTRY",
+        "symbol": "EURUSD",
+        "entry_type": "AMD_HORIZONTAL_BOX",
+        "action": "SELL",
+        "entry_price": 1.11535,
+        "sl_price": 1.11625,
+        "tp_50_eq": 1.113,
+        "tp_structural": 1.111,
+        "sl_pips": 9.0,
+        "structural_rr": 4.83,
+        "htf_key_level": "MTF_PREMIUM_KL",
+        "rejection_reasons": []
+      }
+    }
+  },
+  {
+    "received_at": "2026-11-08T15:44:07.485653",
+    "payload": {
+      "alert": {
+        "symbol": "EURUSD",
+        "timeframe": "M1",
+        "entry_type": "AMD_HORIZONTAL_BOX",
+        "action": "SELL",
+        "entry_price": 1.11535,
+        "sl_price": 1.11625,
+        "tp_50_eq": 1.113,
+        "tp_structural": 1.111,
+        "htf_key_level": "MTF_PREMIUM_KL",
+        "passphrase": null
+      },
+      "validation": {
+        "accepted": true,
+        "status": "APPROVED_INSTITUTIONAL_ENTRY",
+        "symbol": "EURUSD",
+        "entry_type": "AMD_HORIZONTAL_BOX",
+        "action": "SELL",
+        "entry_price": 1.11535,
+        "sl_price": 1.11625,
+        "tp_50_eq": 1.113,
+        "tp_structural": 1.111,
+        "sl_pips": 9.0,
+        "structural_rr": 4.83,
+        "htf_key_level": "MTF_PREMIUM_KL",
+        "rejection_reasons": []
+      }
+    }
   }
 ]

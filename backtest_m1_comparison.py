@@ -1,82 +1,75 @@
 """
-Backtest Comparativo su Dati Reali (EURUSD & GBPUSD):
-Confronto Scientifico tra le due uniche modalità istituzionali ammesse:
-1. ENTRY_MANIPULATION (Entry 1: Aggressiva sul picco della manipolazione del Key Level)
-2. ENTRY_POST_BREAKOUT_RETEST (Entry 2: Conservativa sul retest dell'Imbalance post-breakout)
+Backtest Comparativo su Dati Reali di Mercato (EUR/USD & GBP/USD):
+Valuta e confronta le due morfologie del meccanismo di Entry:
+1. AMD_HORIZONTAL_BOX (Box di Accumulazione Orizzontale A-M-D -> Rottura M/m con IMB -> >=2 Chiusure -> Rientro in IMB)
+2. DYNAMIC_ACCUMULATION_BOS (Accumulazione Dinamica M/m -> Rottura M/m con IMB -> >=2 Chiusure -> Rientro in IMB)
 
-Nessuna entrata arbitraria dentro l'accumulazione.
-Target contestuali: Target 1 al 50% Equilibrium e Target Finale su liquidità strutturale.
+Esporta tutti i trade di EUR/USD e GBP/USD in `data/trades_executed_log.csv`.
 """
-import pandas as pd
-import numpy as np
-import yfinance as yf
+from pathlib import Path
+from typing import List
 
-from core.data_loader import resample_candles
-from core.strategy import InstitutionalAMDEngine
+from backtest import print_comparison_table
+from config import AccumulationType
+from core.data_loader import (
+    fetch_and_save_real_market_data,
+    load_candles_csv,
+    resample_candles
+)
+from core.strategy import (
+    InstitutionalAMDEngine,
+    InstitutionalTrade,
+    export_trades_to_csv
+)
 
 
-def run_comparative_asset_test(ticker: str = "EURUSD=X", name: str = "EUR/USD", period: str = "7d"):
-    print(f"\n[+] Scaricamento dati reali {name} (periodo: {period}, intervallo: 1m)...")
-    raw = yf.download(ticker, period=period, interval="1m", progress=False)
-    if isinstance(raw.columns, pd.MultiIndex):
-        raw.columns = [col[0].lower() for col in raw.columns]
-    else:
-        raw.columns = [col.lower() for col in raw.columns]
+def analyze_real_pair(ticker: str, symbol: str, csv_path: str) -> List[InstitutionalTrade]:
+    path = Path(csv_path)
+    print(f"\n[+] Acquisizione dati REALI ECN M1 per {symbol} ({ticker})...")
+    fetch_and_save_real_market_data(ticker=ticker, output_path=path, days=14)
 
-    df_m1 = raw[['open', 'high', 'low', 'close']].dropna().copy()
-    df_m1.index = pd.to_datetime(df_m1.index)
-    print(f"[+] Candele M1 scaricate: {len(df_m1)}")
-
+    df_m1 = load_candles_csv(path)
     df_m5 = resample_candles(df_m1, target_tf="5min")
+    df_h1 = resample_candles(df_m1, target_tf="1h")
     df_h4 = resample_candles(df_m1, target_tf="4h")
-    print(f"[+] Resampling: M5={len(df_m5)}, H4={len(df_h4)}")
 
-    engine = InstitutionalAMDEngine()
-    trades = engine.analyze_market(df_m1=df_m1, df_m5=df_m5, df_h4=df_h4)
+    print(f"[+] {symbol} caricato: {len(df_m1)} candele M1 ({df_m1.index[0]} -> {df_m1.index[-1]})")
 
-    if not trades:
-        print(f"[!] Nessuna sequenza A-M-D valida trovata su {name}.")
-        return
+    engine = InstitutionalAMDEngine(symbol=symbol)
+    trades = engine.analyze_market(df_m1=df_m1, df_m5=df_m5, df_h4=df_h4, df_h1=df_h1)
 
-    trades_manip = [t for t in trades if t.entry_type.value == "ENTRY_MANIPULATION"]
-    trades_retest = [t for t in trades if t.entry_type.value == "ENTRY_POST_BREAKOUT_RETEST"]
+    trades_box = [t for t in trades if t.accumulation_type == AccumulationType.AMD_HORIZONTAL_BOX]
+    trades_dyn = [t for t in trades if t.accumulation_type == AccumulationType.DYNAMIC_ACCUMULATION_BOS]
 
-    def calc_stats(subset):
-        total = len(subset)
-        if total == 0:
-            return {"total": 0, "strict_wr": 0.0, "adj_wr": 0.0, "avg_sl": 0.0, "avg_mae": 0.0, "avg_rr": 0.0}
-        strict_w = sum(1 for t in subset if t.strict_win)
-        adj_w = sum(1 for t in subset if t.adjusted_win)
-        avg_sl = np.mean([t.sl_pips for t in subset])
-        avg_mae = np.mean([t.mae_pips for t in subset])
-        rrs = [t.realized_rr for t in subset if t.realized_rr is not None]
-        avg_rr = np.mean(rrs) if rrs else 0.0
-        return {
-            "total": total,
-            "strict_wr": (strict_w / total * 100),
-            "adj_wr": (adj_w / total * 100),
-            "avg_sl": avg_sl,
-            "avg_mae": avg_mae,
-            "avg_rr": avg_rr
-        }
+    trades_m5 = [t for t in trades if t.timeframe == "M5"]
+    trades_m1 = [t for t in trades if t.timeframe == "M1"]
 
-    sm = calc_stats(trades_manip)
-    sr = calc_stats(trades_retest)
+    print_comparison_table(
+        trades_box, trades_dyn,
+        "AMD_HORIZ_BOX", "DYNAMIC_BOS_IMB",
+        f"REPORT {symbol} (DATI REALI): BOX ORIZZONTALE A-M-D vs ACCUMULO DINAMICO M/m"
+    )
 
-    print("\n" + "=" * 76)
-    print(f"       REPORT COMPARATIVO ISTITUZIONALE: {name} (DATI REALI)")
-    print("=" * 76)
-    print(f"{'METRICA':<36} | {'MANIPULATION (1)':<17} | {'BREAKOUT RETEST (2)':<16}")
-    print("-" * 76)
-    print(f"{'Trade Totali Conclusi':<36} | {sm['total']:<17} | {sr['total']:<16}")
-    print(f"{'Strict Win Rate (Target Finale)':<36} | {sm['strict_wr']:>15.1f}% | {sr['strict_wr']:>14.1f}%")
-    print(f"{'Adjusted Win Rate (Con Parziale 50%)':<36} | {sm['adj_wr']:>15.1f}% | {sr['adj_wr']:>14.1f}%")
-    print(f"{'Stop Loss Medio':<36} | {sm['avg_sl']:>15.1f} p | {sr['avg_sl']:>14.1f} p")
-    print(f"{'MAE Medio / Drawdown':<36} | {sm['avg_mae']:>15.1f} p | {sr['avg_mae']:>14.1f} p")
-    print(f"{'R:R Effettivo Realizzato':<36} | {sm['avg_rr']:>15.2f} R | {sr['avg_rr']:>14.2f} R")
-    print("=" * 76)
+    print_comparison_table(
+        trades_m5, trades_m1,
+        "ESECUZIONE M5", "RAGGI X M1",
+        f"REPORT {symbol} (DATI REALI): ESECUZIONE M5 vs RAGGI X M1"
+    )
+
+    return trades
 
 
 if __name__ == "__main__":
-    run_comparative_asset_test("EURUSD=X", "EUR/USD", "7d")
-    run_comparative_asset_test("GBPUSD=X", "GBP/USD", "7d")
+    all_trades: List[InstitutionalTrade] = []
+
+    eu_trades = analyze_real_pair("EURUSD=X", "EURUSD", "data/eurusd_m1_sample.csv")
+    all_trades.extend(eu_trades)
+
+    gu_trades = analyze_real_pair("GBPUSD=X", "GBPUSD", "data/gbpusd_m1_real.csv")
+    for idx, tr in enumerate(gu_trades, start=len(all_trades) + 1):
+        tr.trade_id = idx
+    all_trades.extend(gu_trades)
+
+    log_file = Path("data/trades_executed_log.csv")
+    export_trades_to_csv(all_trades, output_path=log_file)
+    print(f"\n[OK] Esportati {len(all_trades)} trade reali totali in {log_file} per verifica su TradingView.\n")

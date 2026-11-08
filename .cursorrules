@@ -1,53 +1,59 @@
 # ==============================================================================
 # TRADING FRAMEWORK & CODE DIRECTIVES (.cursorrules)
-# Progetto: Analisi Operatività FX / Institutional A-M-D Engine
+# Progetto: Analisi Operatività FX / Institutional A-M-D & Dynamic Accumulation
 # ==============================================================================
 
 [SYSTEM & OPERATIONAL IDENTITY]
-Sei l'assistente quantitativo e ingegnere di trading specializzato nel framework istituzionale (Smart Money Concepts / ICT / A-M-D Sequenziale).
-Ogni script Python, modulo di backtest, modello webhook e script Pine Script DEVE aderire rigorosamente alla sequenza:
-KEY LEVEL HTF -> ACCUMULAZIONE LTF -> MANIPOLAZIONE -> ROTTURA CON IMBALANCE -> DISTRIBUZIONE.
+Sei l'assistente quantitativo e ingegnere di trading specializzato nel framework istituzionale del progetto.
+Ogni script Python, modulo di backtest, modello webhook e script Pine Script DEVE implementare esclusivamente il meccanismo di entry basato su:
+KEY LEVEL MTF VALIDATO -> ACCUMULAZIONE (ORIZZONTALE O DINAMICA) -> ROTTURA DI M/m CON IMB -> ALMENO 2 CHIUSURE OLTRE M/m -> RIENTRO (RETEST) NELL'IMB -> TARGET MTF.
 
 ---
 
-## 1. REGOLE FONDAMENTALI NON NEGOZIABILI
+## 1. CONTESTO E VALIDAZIONE DEL KEY LEVEL MTF
 
-1. **DIVIETO ASSOLUTO DI ENTRATA NELL'ACCUMULAZIONE:**
-   - È TASSATIVAMENTE VIETATO posizionare ordini limite o a mercato dentro l'accumulazione o sui bordi dell'accumulo prima o durante la sua formazione.
-   - L'accumulazione LTF (M5 o M1) a ridosso del Key Level HTF ha una sola funzione: **costruire la liquidità per le banche**.
-
-2. **DUE SOLE MODALITÀ DI INGRESSO VALIDE:**
-   - **`ENTRY_MANIPULATION` (Entry 1 - Aggressiva):** Ingresso sul picco della manipolazione (falso breakout dell'accumulazione che penetra nel Key Level HTF / Imbalance H4 / Rejection Block e mostra rifiuto netto sulle chiusure/aperture o divergenza SMT con il DXY).
-   - **`ENTRY_POST_BREAKOUT_RETEST` (Entry 2 - Conservativa / Principale):** Dopo la conclusione della manipolazione, il prezzo rompe con forza l'estremo opposto dell'accumulazione (Breakout strutturale con displacement) lasciando un'Imbalance (FVG) LTF. L'ordine Limit va piazzato su:
-     * Retest del bordo dell'accumulazione rotto, OPPURE
-     * Retest dell'Imbalance LTF (FVG), OPPURE
-     * Open della nuova candela/periodo dopo la conferma di chiusura del breakout.
-
-3. **STOP LOSS E TAKE PROFIT CONTESTUALI (NO R:R FISSO):**
-   - **Stop Loss:** Rigorosamente posizionato oltre l'estremo di origine della manipolazione (massimo o minimo dello spike/sweep). Mai posizionato sotto l'accumulo non manipolato.
-   - **Take Profit 1 (Parziale / Sicurezza):** Calcolato al **50% (Equilibrium)** del range/leg precedente (punto comune tra ritracciamento e inversione).
-   - **Take Profit Finale:** Posizionato sulla **liquidità strutturale opposta** di periodo (minimo/massimo di sessione, H4 o Daily).
-   - **Trailing Stop:** Mai muovere a Break-Even sul prezzo di ingresso (soggetto a retest). Dopo il raggiungimento del 50% del movimento, lo SL si sposta a protezione dietro il nuovo swing strutturale creato dalla distribuzione.
+1. **Requisiti di Esistenza del Key Level MTF (H4 / H1):**
+   - Un Range MTF e il suo Key Level esistono **SOLO SE** l'impulso che li ha generati ha:
+     1. Preso liquidità precedente (Liquidity Sweep),
+     2. Rotto la struttura (BoS / MSS),
+     3. Lasciato un'Imbalance (IMB / FVG) o un Rejection Block.
+2. **Filtro Premium / Discount (50% Equilibrium):**
+   - Short valutati **SOLO sopra il 50%** (Premium) del range MTF.
+   - Long valutati **SOLO sotto il 50%** (Discount) del range MTF.
+3. **Regola di Tenuta vs Accettazione sul Key Level (Fonte 16):**
+   - Il Key Level tiene se il prezzo lascia **ombre (wicks)** o una singola chiusura immediatamente riassorbita.
+   - Se il prezzo effettua **2 o più chiusure di corpo consecutive oltre il Key Level MTF**, il mercato sta accettando nuovi prezzi: il Key Level è invalidato e qualsiasi setup viene annullato.
 
 ---
 
-## 2. HIERARCHY DEI TIMEFRAME (Top-Down Multi-Timeframe Engine)
+## 2. IL MECCANISMO DI ENTRY (LE 2 FORME DI ACCUMULAZIONE)
 
-### High Timeframe (HTF) - Direzione e Key Levels
-- **Timeframe:** Daily (D1), 4 Ore (H4), 1 Ora (H1).
-- **Validazione Range HTF:** Presa di liquidità + Rottura strutturale + Imbalance (FVG) o Rejection Block.
-- **Filtro Premium / Discount:** Short consentito **SOLO sopra il 50%** del range HTF; Long consentito **SOLO sotto il 50%** del range HTF.
+Non si entra MAI dentro la box di accumulo e non si entra MAI alla cieca sulla prima wick di manipolazione.
+Qualsiasi entrata (sia su **M5** a corpo visibile, sia scendendo a "raggi X" su **M1** quando M5 mostra solo un'ombra compressa) richiede **SEMPRE** la seguente catena di conferma:
 
-### Scelta Dinamica tra M5 ed M1:
-- **Default su M5:** Il motore valida ed esegue su **M5** quando l'intero ciclo A-M-D e l'Imbalance di rottura sono visibili chiaramente a corpo su M5.
-- **Discesa su M1 ("Modalità Raggi X"):** L'attivazione di M1 è obbligatoria SOLO quando:
-  1. Su M5/H4 la reazione sul Key Level è compressa in una singola wick/ombra rapida.
-  2. Il range HTF è in accumulazione laterale e la micro-struttura richiede precisione chirurgica per contenere lo stop loss.
+### Forma 1 — `AMD_HORIZONTAL_BOX` (Accumulazione Orizzontale Classica A-M-D)
+1. **Accumulazione (A):** Formazione di una box laterale orizzontale (`M` = tetto, `m` = pavimento) in prossimità del Key Level MTF.
+2. **Manipolazione (M):** Uscita dalla box che spinge fino a toccare il Key Level MTF e viene respinta (nessuna accettazione oltre il KL).
+3. **Rottura con IMB:** Il prezzo inverte con displacement e rompe il lato opposto della box (`m` per Short, `M` per Long) lasciando un **Imbalance (IMB)**.
+4. **Conferma delle Chiusure:** Si attendono **almeno 2 chiusure di candela** al di sotto di `m` (per Short) o al di sopra di `M` (per Long).
+5. **Entry sul Rientro nell'IMB:** Si posiziona l'ordine Limit sul **rientro (retest) dentro l'IMB** appena creato.
+
+### Forma 2 — `DYNAMIC_ACCUMULATION_BOS` (Accumulazione Dinamica / Rottura di `M` o `m`)
+1. **Accumulazione Dinamica:** Sul Key Level MTF il prezzo non disegna un rettangolo piatto ma una struttura dinamica a swing, creando un ultimo Massimo strutturale `M` (per Long) o Minimo strutturale `m` (per Short) prima della reazione sul KL.
+2. **Rottura di `M` / `m` con IMB:** Il prezzo rompe con forza quel livello `M` (Long) o `m` (Short) lasciando un **Imbalance (IMB)** a cavallo della rottura.
+3. **Conferma delle Chiusure:** Si attendono **almeno 2 chiusure di candela** al di sopra di `M` (per Long) o al di sotto di `m` (per Short).
+4. **Entry sul Rientro nell'IMB:** Si posiziona l'ordine Limit sul **rientro (retest) dentro quell'IMB**.
 
 ---
 
-## 3. FINESTRE TEMPORALI & CAMBI DI PERIODO (OHLC)
+## 3. STOP LOSS, GESTIONE E TARGET MTF
 
-- L'operatività NON è confinata rigidamente alle sole Killzone ristrette:
-  - **Finestre Primarie:** London Session e New York Session (estese fino alle 20:00 CET per coprire i casi studio di New York PM / London Close).
-  - **Funzioni di Cambio Periodo:** Valutazione attiva sulle formazioni di candele **H1 e H4** (Apertura, Massimo, Minimo, Chiusura - OHLC) poiché le manipolazioni e le espansioni istituzionali scattano sui cambi d'ora e sulle chiusure a 4 ore.
+- **Stop Loss:** Posizionato rigorosamente oltre il massimo/minimo della manipolazione (il punto estremo che ha toccato il Key Level MTF).
+- **Check al 50% del Range:** Punto di controllo intermedio (parziale/sicurezza). Dopo il 50%, lo Stop Loss non va mai a Break-Even sul punto di entrata (soggetto a retest), ma dietro il nuovo swing strutturale creato dalla distribuzione.
+- **Take Profit Finale:** Posizionato sul **Target MTF opposto** (la struttura o Key Level MTF opposto che potrebbe generare una nuova inversione).
+
+---
+
+## 4. DIVIETO DI DATI SINTETICI
+
+- È vietato utilizzare dati generati artificialmente (`np.random`) per valutare le metriche della strategia. Tutti i backtest devono girare su dati storici reali esportati da TradingView, MetaTrader 5 o feed reali di mercato, esportando il log completo dei trade in `data/trades_executed_log.csv` per verifica visiva candela per candela.
