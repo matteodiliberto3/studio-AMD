@@ -79,17 +79,21 @@ class InstitutionalAMDEngine:
         trades: List[InstitutionalTrade] = []
         trade_id = 1
 
-        # 1. Costruzione dei Key Levels MTF validati (H4 + H1)
+        # 1. Costruzione dei Key Levels MTF validati (H4 + H1), ordinati cronologicamente
         mtf_levels: List[HTFKeyLevel] = []
         mtf_levels.extend(find_validated_mtf_key_levels(df_h4, tf_label="H4", lookback_range=15, pip_size=self.pip_size))
         if df_h1 is not None and len(df_h1) >= 6:
             mtf_levels.extend(find_validated_mtf_key_levels(df_h1, tf_label="H1", lookback_range=24, pip_size=self.pip_size))
+        mtf_levels.sort(key=lambda x: x.timestamp)
 
         m5_times = df_m5.index
         m5_highs = df_m5['high'].values
         m5_lows = df_m5['low'].values
 
         last_entry_End_time = m5_times[0] - pd.Timedelta(days=1)
+        kl_left_idx = 0
+        n_kls = len(mtf_levels)
+        max_kl_age = pd.Timedelta(days=4)
 
         i = 15
         while i < len(df_m5) - 20:
@@ -104,11 +108,20 @@ class InstitutionalAMDEngine:
                 i += 1
                 continue
 
-            # Filtra i Key Levels MTF formatisi prima di t_curr e non ancora invalidati
-            active_kls = [
-                kl for kl in mtf_levels
-                if kl.timestamp < t_curr and not kl.invalidated and (t_curr - kl.timestamp) <= pd.Timedelta(days=4)
-            ]
+            # Avanza il puntatore sinistro per scartare i Key Levels più vecchi di 4 giorni
+            min_kl_time = t_curr - max_kl_age
+            while kl_left_idx < n_kls and mtf_levels[kl_left_idx].timestamp < min_kl_time:
+                kl_left_idx += 1
+
+            # Filtra i Key Levels MTF attivi nella finestra [t_curr - 4 giorni, t_curr)
+            active_kls: List[HTFKeyLevel] = []
+            k_ptr = kl_left_idx
+            while k_ptr < n_kls and mtf_levels[k_ptr].timestamp < t_curr:
+                kl_cand = mtf_levels[k_ptr]
+                if not kl_cand.invalidated:
+                    active_kls.append(kl_cand)
+                k_ptr += 1
+
             if not active_kls:
                 i += 1
                 continue
@@ -367,16 +380,22 @@ class InstitutionalAMDEngine:
         - Al raggiungimento del 50% (tp_50_eq), incassa il parziale e sposta lo SL dietro lo swing
         - Chiude il resto al raggiungimento del Target MTF opposto (tp_structural)
         """
-        future = df_m1[df_m1.index > trade.entry_time]
+        future = df_m1.loc[
+            trade.entry_time + pd.Timedelta(minutes=1) : trade.entry_time + pd.Timedelta(days=5)
+        ]
         if len(future) == 0:
             return
 
         current_sl = trade.stop_loss
         max_adverse = 0.0
+        f_highs = future['high'].values
+        f_lows = future['low'].values
+        f_times = future.index
 
-        for t_idx, row in future.iterrows():
-            h = float(row['high'])
-            l = float(row['low'])
+        for idx in range(len(future)):
+            h = float(f_highs[idx])
+            l = float(f_lows[idx])
+            t_idx = f_times[idx]
 
             if trade.direction == "SELL":
                 adverse = max(0.0, (h - trade.entry_price) / self.pip_size)

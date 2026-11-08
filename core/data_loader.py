@@ -127,6 +127,53 @@ def fetch_and_save_real_market_data(
     return df
 
 
+def load_casaos_dukascopy_year(
+    symbol: str = "EURUSD",
+    year: int = 2025,
+    parquet_dir: Union[str, Path] = "data",
+    casaos_host: str = "192.168.1.109",
+    casaos_user: str = "casaos",
+    casaos_pass: str = "casaos",
+    timezone: str = "Europe/Rome"
+) -> pd.DataFrame:
+    """
+    Carica un intero anno solare (es. 2025-01-01 -> 2025-12-31) di candele M1 Dukascopy
+    dal dataset Parquet presente sul server CasaOS (scaricandolo in cache locale se assente).
+    """
+    clean_sym = symbol.upper().replace("/", "").replace("=X", "").strip()
+    local_dir = Path(parquet_dir)
+    local_dir.mkdir(parents=True, exist_ok=True)
+    parquet_filename = f"{clean_sym}_1m_2020-01_to_2026-07.parquet"
+    local_parquet = local_dir / parquet_filename
+
+    if not local_parquet.exists():
+        import paramiko
+        remote_path = f"/media/devmon/WD Elements AE/Documents/QUANT/Krypt_Trader_Engine/data/{parquet_filename}"
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        ssh.connect(casaos_host, username=casaos_user, password=casaos_pass, timeout=10)
+        sftp = ssh.open_sftp()
+        sftp.get(remote_path, str(local_parquet))
+        sftp.close()
+        ssh.close()
+
+    df = pd.read_parquet(local_parquet)
+    df.columns = [str(c).strip().lower() for c in df.columns]
+    time_col = "open_time" if "open_time" in df.columns else df.columns[0]
+
+    ts = pd.to_datetime(df[time_col], utc=True)
+    # Filtra rapidamente sull'anno richiesto prima della conversione timezone completa
+    mask = (ts >= pd.Timestamp(f"{year}-01-01 00:00:00", tz="UTC")) & (
+        ts <= pd.Timestamp(f"{year}-12-31 23:59:59", tz="UTC")
+    )
+    df_year = df.loc[mask].copy()
+    df_year["timestamp"] = ts.loc[mask].dt.tz_convert(timezone)
+    df_year = df_year.set_index("timestamp").sort_index()
+    df_year = df_year[~df_year.index.duplicated(keep="last")]
+    df_year = df_year[["open", "high", "low", "close", "volume"]].astype(float).dropna()
+    return df_year
+
+
 def resample_candles(df_m1: pd.DataFrame, target_tf: str = "5min") -> pd.DataFrame:
     """
     Aggrega candele da M1 a timeframe superiori ('5min', '15min', '1h', '4h', '1D')
